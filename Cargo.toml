@@ -1,0 +1,22 @@
+[package]
+name = "orderbook_aggregator"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+
+[dependencies]
+anyhow = "1.0.69"
+# futures-core = "0.3.26"
+prost = "0.11.6"
+serde = { version = "1.0", features = [ "derive" ] }
+serde_yaml = "0.9"
+tokio = {version = "1.25.0", features = ["full"]}
+tokio-stream = "0.1.11"
+tokio-tungstenite = "0.18.0"
+tonic = "0.8.3"
+
+[build-dependencies]
+tonic-build = "0.8"
