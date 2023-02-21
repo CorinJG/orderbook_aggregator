@@ -1,6 +1,20 @@
 use orderbook_aggregator::websocket;
+use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() {
-    websocket::binance::run_client().await;
+    let (tx, mut rx) = mpsc::channel(4);
+    tokio::select! {
+        client_result = websocket::binance::run_client(10, tx) => {
+            match client_result {
+                Ok(v) => {},
+                Err(e) => {println!("{:?}", e)},
+            }
+        },
+        _ = async {
+            while let Some(m) = rx.recv().await {
+                println!("{m:?}");
+            }
+        } => {},
+    }
 }

@@ -1,102 +1,60 @@
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-/// A representation of an exchange orderbook for a currency pair, designed
-/// for updating using diffs/deltas. If an exchange provides no such API, use
-/// OrderbookSnapshot instead.
-/// May be missing some orders far from the spread, as is the case when updating
-/// from an initial snapshot with a limited depth.
-/// BTreeMap facilitates O(log(n)) insert and remove and significantly simplifies
-/// the implementation.
+/// A representation of an orderbook for a currency pair, designed for updating
+/// using diffs/deltas.
+/// May be missing orders far away from the spread, as the initial snapshot
+/// may have a limited depth.
+///
+/// BTreeMap facilitates O(log(n)) insert and remove and can be iterated in reverse.
+///
+/// If an exchange only provides a snapshot API and no diff channel, just
+/// use Vec<(Decimal, Decimal)> for asks/bid fields instead.
 #[derive(Debug, Eq, PartialEq)]
-pub struct DiffOrderbook {
+pub struct Orderbook {
     asks: BTreeMap<Decimal, Decimal>,
     bids: BTreeMap<Decimal, Decimal>,
 }
 
-impl DiffOrderbook {
-    /// Create a new instance from a snapshot.
-    pub fn from_snapshot(snapshot: OrderbookSnapshot) -> Self {
+impl Orderbook {
+    /// Construct an instance from a type typically available directly when deserializing from exchange API.
+    pub fn from_asks_bids(asks: Vec<(Decimal, Decimal)>, bids: Vec<(Decimal, Decimal)>) -> Self {
         Self {
-            asks: BTreeMap::from_iter(snapshot.asks.iter().map(|ask| (ask.price, ask.quantity))),
-            bids: BTreeMap::from_iter(snapshot.bids.iter().map(|bid| (bid.price, bid.quantity))),
+            asks: BTreeMap::from_iter(asks.into_iter().map(|(price, quantity)| (price, quantity))),
+            bids: BTreeMap::from_iter(bids.into_iter().map(|(price, quantity)| (price, quantity))),
         }
     }
 
-    /// Update the orderbook with the new prices/quantities.
-    fn import_updates(
+    /// Update the orderbook with the new prices/quantities (when using websocket diff/delta channel).
+    pub fn ingest_updates(
         &mut self,
-        ask_updates: Vec<OrderbookLevel>,
-        bid_updates: Vec<OrderbookLevel>,
+        ask_updates: Vec<(Decimal, Decimal)>,
+        bid_updates: Vec<(Decimal, Decimal)>,
     ) {
-        for update in ask_updates {
-            if update.quantity == dec!(0) {
-                self.asks.remove(&update.price); // None here may be because order outside initial snapshot depth
+        for (price, quantity) in ask_updates {
+            if quantity == dec!(0) {
+                self.asks.remove(&price); // None here may be because order outside initial snapshot depth
             } else {
-                self.asks.insert(update.price, update.quantity);
+                self.asks.insert(price, quantity);
             }
         }
-        for update in bid_updates {
-            if update.quantity == dec!(0) {
-                self.bids.remove(&update.price); // None here may be because order outside initial snapshot depth
+        for (price, quantity) in bid_updates {
+            if quantity == dec!(0) {
+                self.bids.remove(&price); // None here may be because order outside initial snapshot depth
             } else {
-                self.bids.insert(update.price, update.quantity);
+                self.bids.insert(price, quantity);
             }
         }
     }
-}
 
-/// A representation of en exchange orderbook for a currency pair.
-/// The API guarantees it is always sorted, in that asks are ascending in price, bids are descending in price.
-/// This struct is useful for rest or websocket APIs sending snapshots, as opposed to diffs/deltas.
-#[derive(Debug, Eq, PartialEq)]
-pub struct OrderbookSnapshot {
-    asks: Vec<OrderbookLevel>,
-    bids: Vec<OrderbookLevel>,
-}
-
-impl OrderbookSnapshot {
-    pub fn new() -> Self {
+    /// Return a new Orderbook with ask and bid halves truncated to given depth.
+    pub fn truncate(&self, depth: usize) -> Self {
         Self {
-            asks: Vec::new(),
-            bids: Vec::new(),
+            asks: self.asks.iter().take(depth).map(|(&price, &quantity)| (price, quantity)).collect(),
+            bids: self.bids.iter().rev().take(depth).map(|(&price, &quantity)| (price, quantity)).collect(),
         }
-    }
-
-    /// Sort the orderbook, so that asks are ascending and bids are descending.
-    fn sort(&mut self) {
-        self.asks.sort_by(|a, b| a.cmp(b));
-        self.bids.sort_by(|a, b| b.cmp(a));
-    }
-}
-
-/// A single level in an orderbook.
-#[derive(Debug)]
-struct OrderbookLevel {
-    price: Decimal,
-    quantity: Decimal,
-}
-
-impl PartialOrd for OrderbookLevel {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.price.partial_cmp(&other.price)
-    }
-}
-
-impl PartialEq for OrderbookLevel {
-    fn eq(&self, other: &Self) -> bool {
-        self.price == other.price
-    }
-}
-
-impl Eq for OrderbookLevel {}
-
-impl Ord for OrderbookLevel {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.price.cmp(&other.price)
     }
 }
 
@@ -105,103 +63,86 @@ mod tests {
     use super::*;
 
     #[test]
-    fn orderbook_sort() {
-        #[rustfmt::skip]
-        let mut ob = OrderbookSnapshot {
-            asks: vec![
-                OrderbookLevel { price: dec!(3), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(5), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(4), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(2), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(1), quantity: dec!(3), },
-            ],
-            bids: vec![
-                OrderbookLevel { price: dec!(1), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(5), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(3), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(4), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(2), quantity: dec!(3), },
-            ],
-        };
-        #[rustfmt::skip]
-        let target = OrderbookSnapshot {
-            asks: vec![
-                OrderbookLevel { price: dec!(1), quantity: dec!(3), },
-                OrderbookLevel { price: dec!(2), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(3), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(4), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(5), quantity: dec!(1), },
-            ],
-            bids: vec![
-                OrderbookLevel { price: dec!(5), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(4), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(3), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(2), quantity: dec!(3), },
-                OrderbookLevel { price: dec!(1), quantity: dec!(2), },
-            ],
-        };
-        ob.sort();
-        assert_eq!(ob, target);
-    }
-
-    #[test]
     fn diff_orderbook_update() {
         #[rustfmt::skip]
-        let ob = OrderbookSnapshot {
-            asks: vec![
-                OrderbookLevel { price: dec!(3), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(5), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(4), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(2), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(1), quantity: dec!(3), },
+        let mut dob = Orderbook::from_asks_bids(
+            vec![
+                (dec!(3), dec!(1)),
+                (dec!(5), dec!(1)),
+                (dec!(4), dec!(1)),
+                (dec!(2), dec!(2)),
+                (dec!(1), dec!(3)),
             ],
-            bids: vec![
-                OrderbookLevel { price: dec!(1), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(5), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(3), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(4), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(2), quantity: dec!(3), },
+            vec![
+                (dec!(1), dec!(2)),
+                (dec!(5), dec!(1)),
+                (dec!(3), dec!(1)),
+                (dec!(4), dec!(2)),
+                (dec!(2), dec!(3)),
             ],
-        };
-
-        let mut dob = DiffOrderbook::from_snapshot(ob);
+        );
 
         #[rustfmt::skip]
         let ask_updates = vec!(
-            OrderbookLevel { price: dec!(1), quantity: dec!(21) },
-            OrderbookLevel { price: dec!(2), quantity: dec!(22) },
-            OrderbookLevel { price: dec!(3), quantity: dec!(0) },
-            OrderbookLevel { price: dec!(14), quantity: dec!(24) },
-            OrderbookLevel { price: dec!(15), quantity: dec!(0) },
+            (dec!(1), dec!(21)),
+            (dec!(2), dec!(22)),
+            (dec!(3), dec!(0)),
+            (dec!(14), dec!(24)),
+            (dec!(15), dec!(0)),
         );
         #[rustfmt::skip]
         let bid_updates = vec!(
-            OrderbookLevel { price: dec!(1), quantity: dec!(2) },
-            OrderbookLevel { price: dec!(2), quantity: dec!(0) },
-            OrderbookLevel { price: dec!(3), quantity: dec!(2) },
-            OrderbookLevel { price: dec!(4), quantity: dec!(2) },
-            OrderbookLevel { price: dec!(6), quantity: dec!(2) },
+            (dec!(1), dec!(2)),
+            (dec!(2), dec!(0)),
+            (dec!(3), dec!(2)),
+            (dec!(4), dec!(2)),
+            (dec!(6), dec!(2)),
         );
-        dob.import_updates(ask_updates, bid_updates);
+        dob.ingest_updates(ask_updates, bid_updates);
 
         #[rustfmt::skip]
-        let target_snapshot = OrderbookSnapshot {
-            asks: vec![
-                OrderbookLevel { price: dec!(14), quantity: dec!(24) },
-                OrderbookLevel { price: dec!(5), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(4), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(2), quantity: dec!(22), },
-                OrderbookLevel { price: dec!(1), quantity: dec!(21), },
+        let target = Orderbook::from_asks_bids(
+            vec![
+                (dec!(14), dec!(24)),
+                (dec!(5), dec!(1)),
+                (dec!(4), dec!(1)),
+                (dec!(2), dec!(22)),
+                (dec!(1), dec!(21)),
             ],
-            bids: vec![
-                OrderbookLevel { price: dec!(1), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(5), quantity: dec!(1), },
-                OrderbookLevel { price: dec!(3), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(4), quantity: dec!(2), },
-                OrderbookLevel { price: dec!(6), quantity: dec!(2), },
+            vec![
+                (dec!(1), dec!(2)),
+                (dec!(5), dec!(1)),
+                (dec!(3), dec!(2)),
+                (dec!(4), dec!(2)),
+                (dec!(6), dec!(2)),
             ]
-        };
-        let target = DiffOrderbook::from_snapshot(target_snapshot);
+        );
         assert_eq!(dob, target);
+    }
+
+    #[test]
+    fn truncate_orderbook() {
+        #[rustfmt::skip]
+        let ob = Orderbook::from_asks_bids(
+            vec![
+                (dec!(14), dec!(24)),
+                (dec!(5), dec!(1)),
+                (dec!(4), dec!(1)),
+                (dec!(2), dec!(22)),
+                (dec!(1), dec!(21)),
+            ],
+            vec![
+                (dec!(1), dec!(2)),
+                (dec!(5), dec!(1)),
+                (dec!(3), dec!(2)),
+                (dec!(4), dec!(2)),
+                (dec!(6), dec!(2)),
+            ]
+        );
+        let target = Orderbook::from_asks_bids(
+            vec![(dec!(4), dec!(1)), (dec!(2), dec!(22)), (dec!(1), dec!(21))],
+            vec![(dec!(5), dec!(1)), (dec!(4), dec!(2)), (dec!(6), dec!(2))],
+        );
+        assert_eq!(target, ob.truncate(3));
     }
 }

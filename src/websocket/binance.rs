@@ -1,33 +1,14 @@
-// ws docs: https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md
-//
-// A connection lasts for 24h then expect to be disconnected
-// server will send ping every 3 minutes
-// client may send unsolicited Pongs
-// if server doesn't receive Pong within 10mins, disconnect client
-
-// wss://stream.binance.com:9443/ws/ethbtc@depth@100ms <-- the diff stream, buffer events
-// diff depth stream: {"e":"depthUpdate","E":1676819103587,"s":"BNBBTC","U":2979280130,"u":2979280131,"b":[["0.01280800","2.47500000"]],"a":[["0.01280900","1.13100000"]]}
-// https://api.binance.com/api/v3/depth?symbol=BNBBTC&limit=1000 <-- get this after 1s or so of buffering diff ws stream events
-// Drop any event in the ws msg buffer where u <= lastUpdateId in the snapshot
-// the first event in the buffer to process should have U <= lastUpdateId+1 AND u >= lastUpdateId+1
-// While listening to the stream, each new event's U should be equal to the previous event's u+1
-// Be aware there will be levels outside of the (1,000 or 5,000) initial depth snapshot
-// This means you WILL receive updates for prices at levels outside of the initial snapshot
-// but you won't receive updates for the prices which DO NOT change, so your local orderbook will be
-// different far from spread.
-// Receiving an event at a price level that is outside of your local orderbook can happen and is normal
-//
-use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::rc::Rc;
+use std::pin::Pin;
 
-use futures_util::{pin_mut, StreamExt};
+use futures_util::{Stream, StreamExt};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
+use tungstenite::{error::Error, protocol::Message};
 
-use crate::orderbook::{DiffOrderbook, OrderbookSnapshot};
+use crate::orderbook::Orderbook;
 
 const WS_BASE_URL: &str = "wss://stream.binance.com:443/ws";
 
@@ -66,97 +47,170 @@ enum BinanceWsMessage {
 }
 use BinanceWsMessage::*;
 
-/// Whilst still awaiting an initial restful orderbook snapshot, buffer the messages.
-async fn buffer_message(
-    message: BinanceWsMessage,
-    message_buffer: &Rc<RefCell<VecDeque<BinanceWsMessage>>>,
-) {
-    match message {
-        Ping(_) => (), // tungstenite handles pong frame responses automatically
-        DiffDepth { .. } => {
-            message_buffer.borrow_mut().push_back(message);
+/// Once we have received the initial rest snapshot, ingest the buffered diff events,
+/// processing the ones with pertinent update_ids (updates after the initial snapshot).
+/// Returns an Orderbook and the latest update_id to reconcile with subsequently processed
+/// messages.
+fn ingest_buffer(
+    orderbook: BinanceOrderbookSnapshot,
+    message_buffer: VecDeque<BinanceWsMessage>,
+) -> anyhow::Result<(Orderbook, u64)> {
+    // initialize our internal orderbook from the initial snapshot
+    let mut diff_orderbook = Orderbook::from_asks_bids(orderbook.asks, orderbook.bids);
+
+    let mut updates = message_buffer.into_iter().skip_while(|message| {
+        // drop events where last_update_id older than initial snapshot update_id
+        match message {
+            DiffDepth { last_update_id, .. } => *last_update_id <= orderbook.last_update_id,
+            Ping(_) => true,
         }
+    });
+    // validate that new first_update_id = previous last_update_id for all events in buffer
+    let mut prev_last_update_id = None;
+    // the first message in the buffer has an additional validation step
+    match updates.next() {
+        Some(message) => match message {
+            DiffDepth {
+                first_update_id,
+                last_update_id,
+                asks,
+                bids,
+                ..
+            } => {
+                if first_update_id > orderbook.last_update_id + 1 {
+                    return Err(anyhow::anyhow!(
+                        "missing event in buffer - first_update_id > initial_snapshot.last_update_id+1"));
+                }
+                prev_last_update_id = Some(last_update_id);
+                diff_orderbook.ingest_updates(asks, bids);
+            }
+            Ping(_) => (),
+        },
+        None => return Ok((diff_orderbook, orderbook.last_update_id)),
     };
-}
-
-/// Once we have obtained an initial orderbook snapshot, can process them and update internal state.
-async fn process_message(
-    message: BinanceWsMessage,
-    tx: &mpsc::Sender<OrderbookSnapshot>
-) {
-    match message {
-        Ping(_) => (), // tungstenite handles pong frame responses automatically
-        DiffDepth { .. } => {
-            // send downstream
-            // tx.send(OrderbookSnapshot{asks: Vec::new(), bids: Vec::new()}).await; //todo
+    // process the remaining messages in the buffer
+    for message in updates {
+        match message {
+            DiffDepth {
+                first_update_id,
+                last_update_id,
+                asks,
+                bids,
+                ..
+            } => {
+                if first_update_id != prev_last_update_id.unwrap() + 1 {
+                    return Err(anyhow::anyhow!("missing event in buffer: gap in sequence"));
+                }
+                prev_last_update_id = Some(last_update_id);
+                diff_orderbook.ingest_updates(asks, bids);
+            }
+            Ping(_) => (),
         }
-    };
+    }
+    Ok((
+        diff_orderbook,
+        prev_last_update_id.unwrap_or(orderbook.last_update_id),
+    ))
 }
 
-/// Once we have received the initial rest snapshot, flush the buffered ws diff
-/// messages, processing the ones with pertinent update_ids.
-fn flush_buffer(
-    orderbook: &Rc<RefCell<BinanceOrderbookSnapshot>>,
-    message_buffer: &Rc<RefCell<VecDeque<BinanceWsMessage>>>, 
-) {
-
+async fn buffer_messages(
+    mut read: Pin<&mut impl Stream<Item = Result<Message, Error>>>,
+    message_buffer: &mut VecDeque<BinanceWsMessage>,
+) -> anyhow::Result<()> {
+    while let Some(message) = read.next().await {
+        let data = message?.into_data();
+        let binance_message: BinanceWsMessage = serde_json::from_slice(&data)?;
+        // don't add Ping messages to the buffer
+        if let DiffDepth { .. } = binance_message {
+            message_buffer.push_back(binance_message);
+        }
+    }
+    Ok(())
 }
 
-pub async fn run_client() -> anyhow::Result<()> {
-    let (downstream_tx, _) = mpsc::channel::<OrderbookSnapshot>(4); // these will be passed in as paramters
+/// Once the initial snapshot has been received, process events immediately and forward
+/// downstream.
+async fn process_events(
+    mut read: Pin<&mut impl Stream<Item = Result<Message, Error>>>,
+    tx: mpsc::Sender<Orderbook>,
+    mut diff_orderbook: Orderbook,
+    mut prev_last_update_id: u64,
+    depth: usize,
+) -> anyhow::Result<()> {
+    while let Some(message) = read.next().await {
+        let data = message?.into_data();
+        let binance_message: BinanceWsMessage = serde_json::from_slice(&data)?;
+        // ignore Ping messages
+        if let DiffDepth {
+            first_update_id,
+            last_update_id,
+            bids,
+            asks,
+            ..
+        } = binance_message
+        {
+            if last_update_id <= prev_last_update_id {
+                // discard message if all updates are older than last processed
+                continue
+            }
+            if first_update_id > prev_last_update_id + 1 {
+                // todo return an actual error here and re-try
+                return Err(anyhow::anyhow!(
+                    "unrecoverable state, ws message buffering failed, missing message(s)"
+                ));
+            }
+            prev_last_update_id = last_update_id;
+            diff_orderbook.ingest_updates(asks, bids);
+            tx.send(diff_orderbook.truncate(depth)).await?;
+        }
+    }
+    Ok(())
+}
 
+/// When using the diff delta channel, we need an initial orderbook snapshot (from rest endpoint).
+async fn get_initial_snapshot() -> anyhow::Result<BinanceOrderbookSnapshot> {
+    Ok(
+        reqwest::get("https://api.binance.com/api/v3/depth?symbol=ETHBTC&limit=1000")
+            .await?
+            .json::<BinanceOrderbookSnapshot>()
+            .await?,
+    )
+}
+
+/// Long-running websocket client task.
+pub async fn run_client(
+    depth: usize,
+    downstream_tx: mpsc::Sender<Orderbook>,
+) -> anyhow::Result<()> {
     let connect_addr = format!("{WS_BASE_URL}/ethbtc@depth@100ms");
-    let url = url::Url::parse(&connect_addr).unwrap();
+    let url = url::Url::parse(&connect_addr)?;
 
-    let (ws_stream, _response) = connect_async(url).await.expect("Failed to connect");
-    println!("WebSocket handshake has been successfully completed");
+    let (ws_stream, _response) = connect_async(url).await?;
 
     // buffer ws messages whilst awaiting initial rest snapshot
-    let message_buffer: Rc<RefCell<VecDeque<BinanceWsMessage>>> =
-        Rc::new(RefCell::new(VecDeque::new()));
+    let mut message_buffer: VecDeque<BinanceWsMessage> = VecDeque::new();
 
-    // binance ws client never required to send messages to server (apart from pong frame handled by tungstenite)
+    // client never sends messages to server (pong frames handled by tungstenite)
     let (_, read) = ws_stream.split();
+    tokio::pin!(read);
 
-    let orderbook: Rc<RefCell<BinanceOrderbookSnapshot>> = Rc::new(RefCell::new(BinanceOrderbookSnapshot::default()));
-    let initial_snapshot_received = Rc::new(Cell::new(false));
-
-    let incoming_ws_messages = {
-        read.for_each(|message| async {
-            let message = message.unwrap_or_else(|e| panic!("error: {e:?}"));
-            let data = message.into_data();
-            let v: BinanceWsMessage = serde_json::from_slice(&data).unwrap();
-            if initial_snapshot_received.get() {
-                process_message(v, &downstream_tx).await;  
-            } else {
-                buffer_message(v, &message_buffer).await;
-            }
-        })
+    let mut orderbook: BinanceOrderbookSnapshot = tokio::select! {
+        _ = buffer_messages(read.as_mut(), &mut message_buffer) => {
+            return Err(anyhow::anyhow!("websocket stream ended unexpectedly"))
+        },
+        r = get_initial_snapshot() => r?,
     };
 
-    pin_mut!(incoming_ws_messages);
-    // select on the incoming_ws_message receiver and the restful initial snapshot request
-    tokio::select! {
-        _ = &mut incoming_ws_messages => {
-            panic!("websocket dropped"); // todo return error
-        },
-        r = reqwest::get("https://api.binance.com/api/v3/depth?symbol=ETHBTC&limit=1000") => {
-            match r {
-                Ok(r) => { match r.json::<BinanceOrderbookSnapshot>().await {
-                    Ok(v) => {
-                        // now we have an initial snapshot and no longer need to buffer ws messsages
-                        initial_snapshot_received.set(true);
-                        *orderbook.borrow_mut() = v;
-                    },
-                    Err(e) => {},
-                }},
-                Err(e) => {},            
-            } 
-        },
-    }
-    println!("message_buffer: {:?}", message_buffer);
-    flush_buffer(&orderbook, &message_buffer);
-    // after this point the ws client will not use the buffer, processing diffs immediately and forwarding downstream
-    incoming_ws_messages.await;
+    let (diff_orderbook, prev_last_update_id) = ingest_buffer(orderbook, message_buffer)?;
+    // after this the client will not buffer, processing diffs immediately
+    process_events(
+        read.as_mut(),
+        downstream_tx,
+        diff_orderbook,
+        prev_last_update_id,
+        depth,
+    )
+    .await?;
+
     Ok(())
 }
