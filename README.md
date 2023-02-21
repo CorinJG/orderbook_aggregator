@@ -12,7 +12,7 @@ https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.
 
 - A connection lasts for 24h then expect to be disconnected
 - Server will send ping frame every 3 minutes
-- If server doesn't receive pong frame within 10mins, client will be disconnected
+- If server doesn't receive pong frame within 10 mins, client will be disconnected
 - Client may send unsolicited pong frames
 
 Example Diff Depth stream URL (no subscription required): 

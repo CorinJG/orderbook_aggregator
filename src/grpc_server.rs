@@ -4,10 +4,10 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Request, Response, Status};
 
-use crate::orderbook_summary::orderbook_aggregator_server::{
+use crate::proto::orderbook::orderbook_aggregator_server::{
     OrderbookAggregator, OrderbookAggregatorServer,
 };
-use crate::orderbook_summary::{Empty, Summary};
+use crate::proto::orderbook::{Empty, Summary};
 
 #[derive(Debug)]
 pub struct OrderbookAggregatorService {

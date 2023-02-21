@@ -1,17 +1,18 @@
+//! Module for defining types which are used to internally maintain orderbook state.
 use std::collections::BTreeMap;
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-/// A representation of an orderbook for a currency pair, designed for updating
-/// using diffs/deltas.
-/// May be missing orders far away from the spread, as the initial snapshot
-/// may have a limited depth.
+/// A representation of an orderbook for a currency pair, designed for updating using 
+/// diffs/deltas.
+/// May be missing orders far away from the spread, as the initial snapshot may have 
+/// a limited depth.
 ///
-/// BTreeMap facilitates O(log(n)) insert and remove and can be iterated in reverse.
+/// [BTreeMap] facilitates O(log(n)) insert and remove and can be iterated in reverse.
 ///
-/// If an exchange only provides a snapshot API and no diff channel, just
-/// use Vec<(Decimal, Decimal)> for asks/bid fields instead.
+/// If an exchange only provides a snapshot API and no diff channel, should probably just
+/// use [Vec]<([Decimal], [Decimal])> for ask/bid fields instead.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Orderbook {
     asks: BTreeMap<Decimal, Decimal>,
@@ -52,8 +53,19 @@ impl Orderbook {
     /// Return a new Orderbook with ask and bid halves truncated to given depth.
     pub fn truncate(&self, depth: usize) -> Self {
         Self {
-            asks: self.asks.iter().take(depth).map(|(&price, &quantity)| (price, quantity)).collect(),
-            bids: self.bids.iter().rev().take(depth).map(|(&price, &quantity)| (price, quantity)).collect(),
+            asks: self
+                .asks
+                .iter()
+                .take(depth)
+                .map(|(&price, &quantity)| (price, quantity))
+                .collect(),
+            bids: self
+                .bids
+                .iter()
+                .rev()
+                .take(depth)
+                .map(|(&price, &quantity)| (price, quantity))
+                .collect(),
         }
     }
 }

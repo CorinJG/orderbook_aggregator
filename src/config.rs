@@ -11,7 +11,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// Default config for testing purposes.
+    /// Defaults for testing purposes.
     pub fn default() -> Self {
         Self {
             addr: "127.0.0.1:50051".parse().unwrap(),

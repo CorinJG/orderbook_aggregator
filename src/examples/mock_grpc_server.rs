@@ -1,5 +1,5 @@
 use orderbook_aggregator::aggregator::Aggregator;
-use orderbook_aggregator::orderbook_summary::Summary;
+use orderbook_aggregator::proto::orderbook::Summary;
 use orderbook_aggregator::{config::Config, grpc_server};
 
 pub async fn test_run_aggregator(aggregator: Aggregator) {

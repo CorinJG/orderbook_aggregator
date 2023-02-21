@@ -1,6 +1,6 @@
 use tokio::sync::broadcast::Sender;
 
-use crate::orderbook_summary::Summary;
+use crate::proto::orderbook::Summary;
 
 pub struct Aggregator {
     // send updates to the gRPC server
