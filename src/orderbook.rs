@@ -29,7 +29,7 @@ impl Orderbook {
     }
 
     /// Update the orderbook with the new prices/quantities (when using websocket diff/delta channel).
-    pub fn ingest_updates(
+    pub fn apply_updates(
         &mut self,
         ask_updates: Vec<(Decimal, Decimal)>,
         bid_updates: Vec<(Decimal, Decimal)>,
@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn diff_orderbook_update() {
+    fn apply_orderbook_updates() {
         #[rustfmt::skip]
         let mut dob = Orderbook::from_asks_bids(
             vec![
@@ -110,7 +110,7 @@ mod tests {
             (dec!(4), dec!(2)),
             (dec!(6), dec!(2)),
         );
-        dob.ingest_updates(ask_updates, bid_updates);
+        dob.apply_updates(ask_updates, bid_updates);
 
         #[rustfmt::skip]
         let target = Orderbook::from_asks_bids(
