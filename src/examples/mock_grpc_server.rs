@@ -15,7 +15,6 @@ pub async fn test_run_aggregator(aggregator: Aggregator) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let config = Config::default();
-    // let config = orderbook_aggregator::config::read_config();
 
     // channel for Aggregator to forward updates to the gRPC server
     let (tx, _) = tokio::sync::broadcast::channel::<Summary>(4);

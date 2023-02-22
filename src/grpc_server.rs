@@ -41,11 +41,11 @@ impl OrderbookAggregator for OrderbookAggregatorService {
     }
 }
 
-/// Long-running background task to run grpc server.
+/// Run a grpc server using the provided [OrderbookAggregatorService].
 pub async fn run_grpc_server(
     grpc_aggregator_service: OrderbookAggregatorService,
     addr: SocketAddr,
-) {
+) -> Result<(), tonic::transport::Error> {
     let service = OrderbookAggregatorServer::new(grpc_aggregator_service);
-    Server::builder().add_service(service).serve(addr).await; // todo handle Result
+    Server::builder().add_service(service).serve(addr).await
 }

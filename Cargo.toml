@@ -16,6 +16,10 @@ name = "binance_ws"
 path = "src/examples/binance_ws.rs"
 
 [[example]]
+name = "bitstamp_ws"
+path = "src/examples/bitstamp_ws.rs"
+
+[[example]]
 name = "template_ws"
 path = "src/examples/template_ws.rs"
 
