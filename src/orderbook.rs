@@ -1,5 +1,7 @@
 //! Module for defining types which are used to internally maintain orderbook state.
+
 use std::collections::BTreeMap;
+use std::fmt::{Debug, Display, Formatter};
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -9,14 +11,45 @@ use rust_decimal_macros::dec;
 /// May be missing orders far away from the spread, as the initial snapshot may have
 /// a limited depth.
 ///
-/// [BTreeMap] facilitates O(log(n)) insert and remove and can be iterated in reverse.
+/// When updating from a diff channel, [BTreeMap] is suitable for the two halves of the
+/// orderbook as it facilitates O(log(n)) insert and remove.
 ///
-/// If an exchange only provides a snapshot API and no diff channel, should probably just
-/// use [Vec]<([Decimal], [Decimal])> for ask/bid fields instead.
-#[derive(Debug, Eq, PartialEq)]
+/// If an exchange only provides a snapshot API and no diff channel, should just use
+/// [Vec] for each half of the orderbook instead.
+#[derive(Eq, PartialEq)]
 pub struct Orderbook {
     asks: BTreeMap<Decimal, Decimal>,
     bids: BTreeMap<Decimal, Decimal>,
+}
+
+impl Debug for Orderbook {
+    /// Display all levels with asks ordered by increasing price and bids by decreasing price.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Orderbook {{ asks: {{ ")?;
+        for (p, q) in self.asks.iter() {
+            write!(f, "{}", format!("[{p}, {q}], "))?;
+        }
+        write!(f, "... }},\nbids: {{ ")?;
+        for (p, q) in self.bids.iter().rev() {
+            write!(f, "{}", format!("[{p}, {q}], "))?;
+        }
+        write!(f, "... }} }}")
+    }
+}
+
+impl Display for Orderbook {
+    /// Display only the top 10 levels with asks ordered by increasing price and bids by decreasing price.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Orderbook {{ asks: {{ ")?;
+        for (p, q) in self.asks.iter().take(10) {
+            write!(f, "{}", format!("[{p}, {q}], "))?;
+        }
+        write!(f, "... }},\nbids: {{ ")?;
+        for (p, q) in self.bids.iter().rev().take(10) {
+            write!(f, "{}", format!("[{p}, {q}], "))?;
+        }
+        write!(f, "... }} }}")
+    }
 }
 
 impl Orderbook {
