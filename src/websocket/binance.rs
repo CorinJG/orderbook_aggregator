@@ -1,5 +1,5 @@
-//! Types and async functions for connecting to the Binance websocket and maintaining 
-//! a local orderbook which tracks remote state using diff channel. 
+//! Types and async functions for connecting to the Binance websocket and maintaining
+//! a local orderbook which tracks remote state using diff channel.
 
 use std::pin::Pin;
 use std::time::Duration;
@@ -25,32 +25,24 @@ struct OrderbookSnapshot {
     bids: Vec<(Decimal, Decimal)>,
 }
 
-/// The possible websocket message types received by our client.
+// The structure of an orderbook diff/delta websocket message received by our client.
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum WsMessage {
-    // binance includes timestamp in ping frames (every 180s)
-    Ping(u64),
-
-    // the orderbook delta message
-    DiffDepth {
-        #[serde(rename = "e")]
-        event: String,
-        #[serde(rename = "s")]
-        symbol: String,
-        #[serde(rename = "U")]
-        first_update_id: u64,
-        #[serde(rename = "u")]
-        last_update_id: u64,
-        #[serde(rename = "b")]
-        bids: Vec<(Decimal, Decimal)>,
-        #[serde(rename = "a")]
-        asks: Vec<(Decimal, Decimal)>,
-    },
+struct WsMessage {
+    #[serde(rename = "e")]
+    event: String,
+    #[serde(rename = "s")]
+    symbol: String,
+    #[serde(rename = "U")]
+    first_update_id: u64,
+    #[serde(rename = "u")]
+    last_update_id: u64,
+    #[serde(rename = "b")]
+    bids: Vec<(Decimal, Decimal)>,
+    #[serde(rename = "a")]
+    asks: Vec<(Decimal, Decimal)>,
 }
-use WsMessage::*;
 
-/// Process the websocket events, applying ones with updates after the initial snapshot 
+/// Process the websocket events, applying ones with updates after the initial snapshot
 /// to the internal orderbook state.
 /// On update, forward the top-<depth> orderbook downstream.
 /// Performs validation of event type and symbol as well as ensuring no gaps in update IDs.
@@ -62,43 +54,50 @@ async fn process_events(
     tx: mpsc::Sender<Orderbook>,
 ) -> anyhow::Result<()> {
     let mut orderbook = Orderbook::from_asks_bids(initial_snapshot.asks, initial_snapshot.bids);
-    
+
     // there is an additional validation step for the first event applied to the snapshot
     let mut first_pertinent_message_flag = true;
     let mut prev_last_update_id = initial_snapshot.last_update_id;
-    while let Some(message) = read.next().await {
-        let data = message?.into_data();
-        let message: WsMessage = serde_json::from_slice(&data)?;
-        if let DiffDepth {event, symbol, first_update_id, last_update_id, asks, bids,} = message {
-            if event != "depthUpdate" {
-                return Err(anyhow::anyhow!("unexpected event field: {event}"));
-            }
-            if symbol != expected_symbol {
-                return Err(anyhow::anyhow!("unexpected symbol field: {symbol}"));
-            }
-            // discard events where last_update_id is older than rest response update_id
-            if last_update_id <= prev_last_update_id { continue; }
-            if first_pertinent_message_flag {
-                if first_update_id > prev_last_update_id + 1 {
-                    return Err(anyhow::anyhow!("missing event"));
-                }
-                first_pertinent_message_flag = false;
-            } else {
-                if first_update_id != prev_last_update_id + 1 {
-                    return Err(anyhow::anyhow!("missing event, gap in sequence"));
-                }
-            } 
-            prev_last_update_id = last_update_id;
-            orderbook.apply_updates(asks, bids);
-            tx.send(orderbook.truncate(depth)).await?;
+    while let Some(message) = read.next().await.transpose()? {
+        if message.is_ping() || message.is_pong() {
+            continue;
         }
+        let WsMessage {
+            event,
+            symbol,
+            first_update_id,
+            last_update_id,
+            bids,
+            asks,
+        }: WsMessage = serde_json::from_slice(&message.into_data())?;
+        if event != "depthUpdate" {
+            return Err(anyhow!("unexpected event field: {event}"));
+        }
+        if symbol != expected_symbol {
+            return Err(anyhow!("unexpected symbol field: {symbol}"));
+        }
+        // discard events where last_update_id is older than rest response update_id
+        if last_update_id <= prev_last_update_id {
+            continue;
+        }
+        if first_pertinent_message_flag {
+            if first_update_id > prev_last_update_id + 1 {
+                return Err(anyhow!("missing event"));
+            }
+            first_pertinent_message_flag = false;
+        } else if first_update_id != prev_last_update_id + 1 {
+                return Err(anyhow!("missing event, gap in sequence"));
+        }
+        prev_last_update_id = last_update_id;
+        orderbook.apply_updates(asks, bids);
+        tx.send(orderbook.truncate(depth)).await?;
     }
     Err(anyhow!("unexpected websocket connection close"))
 }
 
 /// /// Long-running websocket client task tracking remote orderbook state locally using a diff/delta
 /// event stream. This requires initially buffering event updates whilst we await an initial snapshot
-/// from a restful endpoint. 
+/// from a restful endpoint.
 /// After an initial orderbook snapshot has arrived can being processing buffered websocket events.
 /// Returns with error on disconnection or invalid state.
 /// It's the responsibility of the calling client to attempt reconnection.
@@ -108,25 +107,27 @@ pub async fn run_client(
     symbol: &str,
     downstream_tx: mpsc::Sender<Orderbook>,
 ) -> anyhow::Result<()> {
-
     let connect_addr = format!("{WS_BASE_URL}/{symbol}@depth@100ms");
     let url = url::Url::parse(&connect_addr)?;
-    
+
     // uppercase used in websocket messages
     let symbol = symbol.to_uppercase();
 
     let (ws_stream, _response) = connect_async(url).await?;
     let (_, read) = ws_stream.split();
-    
+
     // wrap the rest request in a timer so we aren't buffering indefinitely
     let initial_snapshot: OrderbookSnapshot = timeout(Duration::from_secs(5), async {
-        reqwest::get(format!("https://api.binance.com/api/v3/depth?symbol={symbol}&limit=1000"))
-            .await?
-            .json()
-            .await
-    }).await??;
+        reqwest::get(format!(
+            "https://api.binance.com/api/v3/depth?symbol={symbol}&limit=1000"
+        ))
+        .await?
+        .json()
+        .await
+    })
+    .await??;
 
-    tokio::pin!(read); 
+    tokio::pin!(read);
     process_events(
         read.as_mut(),
         initial_snapshot,

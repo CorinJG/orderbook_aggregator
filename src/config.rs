@@ -10,9 +10,9 @@ pub struct Config {
     pub exchanges: Vec<String>,
 }
 
-impl Config {
+impl Default for Config {
     /// Defaults for testing purposes.
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             addr: "127.0.0.1:50051".parse().unwrap(),
             currency_pair: "eth_btc".into(),

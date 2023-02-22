@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-/// A representation of an orderbook for a currency pair, designed for updating using 
+/// A representation of an orderbook for a currency pair, designed for updating using
 /// diffs/deltas.
-/// May be missing orders far away from the spread, as the initial snapshot may have 
+/// May be missing orders far away from the spread, as the initial snapshot may have
 /// a limited depth.
 ///
 /// [BTreeMap] facilitates O(log(n)) insert and remove and can be iterated in reverse.
