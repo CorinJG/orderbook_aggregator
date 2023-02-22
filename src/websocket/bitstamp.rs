@@ -44,10 +44,10 @@ struct Data {
     asks: Vec<(Decimal, Decimal)>,
 }
 
-/// Process the websocket events, applying ones with timestamps after the initial snapshot
-/// to the internal orderbook state.
+/// Process the websocket events, applying updates with timestamps after the initial snapshot
+/// to the local orderbook state.
 /// On update, forward the top-<depth> orderbook downstream.
-/// Performs validation of channel, event type and symbol as well as ensuring timestamps are increasing.
+/// Performs validation of channel, event type and symbol and verifies timestamps are increasing.
 async fn process_events(
     mut read: Pin<&mut impl Stream<Item = Result<Message, Error>>>,
     initial_snapshot: OrderbookSnapshot,
@@ -79,7 +79,7 @@ async fn process_events(
                     }
                     orderbook_state_initialized = true;
                 } else if data.microtimestamp < prev_microtimestamp {
-                        return Err(anyhow!("exchange event order cannot be relied upon"));
+                    return Err(anyhow!("exchange event order cannot be relied upon"));
                 }
                 if channel != expected_channel {
                     let unexpected_channel = channel;
@@ -96,7 +96,7 @@ async fn process_events(
     Err(anyhow!("unexpected websocket connection close"))
 }
 
-/// Long-running websocket client task tracking remote orderbook state locally using a diff/delta
+/// Long-running websocket client tracking remote orderbook state locally using a diff/delta
 /// event stream. This requires initially buffering event updates whilst we await an initial snapshot
 /// from a restful endpoint.
 /// After an initial orderbook snapshot has arrived can being processing buffered websocket events.

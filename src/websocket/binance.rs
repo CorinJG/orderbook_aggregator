@@ -42,9 +42,9 @@ struct WsMessage {
     asks: Vec<(Decimal, Decimal)>,
 }
 
-/// Process the websocket events, applying ones with updates after the initial snapshot
-/// to the internal orderbook state.
-/// On update, forward the top-<depth> orderbook downstream.
+/// Process the websocket events, applying updates which have an ID after the initial 
+/// snapshot ID to the local orderbook state.
+/// On update, forward the latest top-<depth> orderbook downstream.
 /// Performs validation of event type and symbol as well as ensuring no gaps in update IDs.
 async fn process_events(
     mut read: Pin<&mut impl Stream<Item = Result<Message, Error>>>,
@@ -86,7 +86,7 @@ async fn process_events(
             }
             first_pertinent_message_flag = false;
         } else if first_update_id != prev_last_update_id + 1 {
-                return Err(anyhow!("missing event, gap in sequence"));
+            return Err(anyhow!("missing event, gap in sequence"));
         }
         prev_last_update_id = last_update_id;
         orderbook.apply_updates(asks, bids);
@@ -95,7 +95,7 @@ async fn process_events(
     Err(anyhow!("unexpected websocket connection close"))
 }
 
-/// /// Long-running websocket client task tracking remote orderbook state locally using a diff/delta
+/// /// Long-running websocket client tracking remote orderbook state locally using a diff/delta
 /// event stream. This requires initially buffering event updates whilst we await an initial snapshot
 /// from a restful endpoint.
 /// After an initial orderbook snapshot has arrived can being processing buffered websocket events.
