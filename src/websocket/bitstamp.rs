@@ -12,15 +12,16 @@ use tokio::{sync::mpsc, time::timeout};
 use tokio_tungstenite::connect_async;
 use tungstenite::{error::Error, protocol::Message};
 
+use crate::config::CurrencyPair;
 use crate::orderbook::Orderbook;
-use crate::websocket::utils::deserialize_number_from_string;
+use crate::utils::deserialize_using_parse;
 
 const WS_BASE_URL: &str = "wss://ws.bitstamp.net";
 
 /// Type to deserialize a raw rest orderbook snapshot into.
 #[derive(Debug, Deserialize)]
 struct OrderbookSnapshot {
-    #[serde(deserialize_with = "deserialize_number_from_string")]
+    #[serde(deserialize_with = "deserialize_using_parse")]
     microtimestamp: u64,
     asks: Vec<(Decimal, Decimal)>,
     bids: Vec<(Decimal, Decimal)>,
@@ -38,7 +39,7 @@ struct WsMessage {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct Data {
-    #[serde(deserialize_with = "deserialize_number_from_string")]
+    #[serde(deserialize_with = "deserialize_using_parse")]
     microtimestamp: u64,
     bids: Vec<(Decimal, Decimal)>,
     asks: Vec<(Decimal, Decimal)>,
@@ -96,6 +97,13 @@ async fn process_events(
     Err(anyhow!("unexpected websocket connection close"))
 }
 
+/// Construct a websocket diff stream subscription message for the given symbol.
+fn construct_subscription_message(symbol: &str) -> String {
+    let front = r#"{"event": "bts:subscribe", "data": {"channel": "diff_order_book_"#;
+    let back = r#""}}"#;
+    format!("{front}{symbol}{back}")
+}
+
 /// Long-running websocket client tracking remote orderbook state locally using a diff/delta
 /// event stream. This requires initially buffering event updates whilst we await an initial snapshot
 /// from a restful endpoint.
@@ -105,7 +113,7 @@ async fn process_events(
 /// Forwards top-<depth> [Orderbook]s to the channel provided.
 pub async fn run_client(
     depth: usize,
-    symbol: &str,
+    symbol: CurrencyPair,
     downstream_tx: mpsc::Sender<Orderbook>,
 ) -> anyhow::Result<()> {
     let connect_addr = WS_BASE_URL;
@@ -113,16 +121,20 @@ pub async fn run_client(
 
     let (ws_stream, _response) = connect_async(url).await?;
     let (mut write, read) = ws_stream.split();
-    let subscribe_message =
-        r#"{"event": "bts:subscribe", "data": {"channel": "diff_order_book_ethbtc"}}"#;
+
+    let symbol_lower = [symbol.base(), symbol.quote()].join("");
+    let subscribe_message = construct_subscription_message(&symbol_lower);
     write
         .send(tungstenite::Message::binary(subscribe_message))
         .await?;
 
+    // todo peek the buffered ws messages instead of waiting for it to populate
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
     // wrap the rest request in a timer so we aren't buffering indefinitely
     let initial_snapshot: OrderbookSnapshot = timeout(Duration::from_secs(5), async {
         reqwest::get(format!(
-            "https://www.bitstamp.net/api/v2/order_book/{symbol}/"
+            "https://www.bitstamp.net/api/v2/order_book/{symbol_lower}/"
         ))
         .await?
         .json()
@@ -135,7 +147,7 @@ pub async fn run_client(
         read.as_mut(),
         initial_snapshot,
         depth,
-        symbol,
+        &symbol_lower,
         downstream_tx,
     )
     .await

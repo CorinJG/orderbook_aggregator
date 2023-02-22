@@ -19,14 +19,11 @@ path = "src/examples/binance_ws.rs"
 name = "bitstamp_ws"
 path = "src/examples/bitstamp_ws.rs"
 
-[[example]]
-name = "template_ws"
-path = "src/examples/template_ws.rs"
-
 [dependencies]
 anyhow = "1.0.69"
 futures-util = "0.3.26"
 prost = "0.11.6"
+regex = "1.7.1"
 reqwest = { version = "0.11.14", features = ["json"] }
 rust_decimal = { version = "1.28.1" }
 rust_decimal_macros = "1.28.1"

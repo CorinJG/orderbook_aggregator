@@ -12,7 +12,7 @@ use tokio::{sync::mpsc, time::timeout};
 use tokio_tungstenite::connect_async;
 use tungstenite::{error::Error, protocol::Message};
 
-use crate::orderbook::Orderbook;
+use crate::{config::CurrencyPair, orderbook::Orderbook};
 
 const WS_BASE_URL: &str = "wss://stream.binance.com:443/ws";
 
@@ -42,7 +42,7 @@ struct WsMessage {
     asks: Vec<(Decimal, Decimal)>,
 }
 
-/// Process the websocket events, applying updates which have an ID after the initial 
+/// Process the websocket events, applying updates which have an ID after the initial
 /// snapshot ID to the local orderbook state.
 /// On update, forward the latest top-<depth> orderbook downstream.
 /// Performs validation of event type and symbol as well as ensuring no gaps in update IDs.
@@ -104,14 +104,18 @@ async fn process_events(
 /// Forwards top-<depth> [Orderbook]s to the channel provided
 pub async fn run_client(
     depth: usize,
-    symbol: &str,
+    symbol: CurrencyPair,
     downstream_tx: mpsc::Sender<Orderbook>,
 ) -> anyhow::Result<()> {
-    let connect_addr = format!("{WS_BASE_URL}/{symbol}@depth@100ms");
-    let url = url::Url::parse(&connect_addr)?;
+    let symbol_lower = [symbol.base(), symbol.quote()].join("");
+    let symbol_upper = [
+        symbol.base().to_uppercase().as_str(),
+        symbol.quote().to_uppercase().as_str(),
+    ]
+    .join("");
 
-    // uppercase used in websocket messages
-    let symbol = symbol.to_uppercase();
+    let connect_addr = format!("{WS_BASE_URL}/{symbol_lower}@depth@100ms");
+    let url = url::Url::parse(&connect_addr)?;
 
     let (ws_stream, _response) = connect_async(url).await?;
     let (_, read) = ws_stream.split();
@@ -119,7 +123,7 @@ pub async fn run_client(
     // wrap the rest request in a timer so we aren't buffering indefinitely
     let initial_snapshot: OrderbookSnapshot = timeout(Duration::from_secs(5), async {
         reqwest::get(format!(
-            "https://api.binance.com/api/v3/depth?symbol={symbol}&limit=1000"
+            "https://api.binance.com/api/v3/depth?symbol={symbol_upper}&limit=1000"
         ))
         .await?
         .json()
@@ -132,7 +136,7 @@ pub async fn run_client(
         read.as_mut(),
         initial_snapshot,
         depth,
-        &symbol,
+        &symbol_upper,
         downstream_tx,
     )
     .await
