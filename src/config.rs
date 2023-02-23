@@ -29,7 +29,8 @@ impl std::str::FromStr for Exchange {
 /// Currency pair for reasoning about how exchanges present symbols at various
 /// places in their API.
 /// Also allows API client implementations to specify whether it's "ethbtc",
-/// "eth_btc" or "BTC-ETH" etc. We'll use lowercase internally.
+/// "eth_btc" or "BTC-ETH" etc. We'll use lowercase internally and the type will
+/// enforce this.
 #[derive(Debug, Deserialize)]
 pub struct CurrencyPair {
     base: String,
@@ -93,6 +94,10 @@ impl Config {
 }
 
 /// Parse the config file and validate it.
+/// 
+/// # Panics
+/// Will panic on invalid config, for example an unsupported exchange, invalid
+/// currency_pair formatting or currency_pair not supported by an exchange.
 pub fn read_config() -> Config {
     let config_path = env!("CARGO_MANIFEST_DIR");
     let f = std::fs::File::open(format!("{config_path}/config.yml"))

@@ -8,14 +8,12 @@ use rust_decimal_macros::dec;
 
 /// A representation of an orderbook for a currency pair, designed for updating using
 /// diffs/deltas.
-/// May be missing orders far away from the spread, as the initial snapshot may have
-/// a limited depth.
 ///
 /// When updating from a diff channel, [BTreeMap] is suitable for the two halves of the
 /// orderbook as it facilitates O(log(n)) insert and remove.
 ///
-/// If an exchange only provides a snapshot API and no diff channel, should just use
-/// [Vec] for each half of the orderbook instead.
+/// If an exchange only provides a snapshot API and no diff channel, a [Vec] may be more suitable
+/// for each half of the orderbook instead.
 #[derive(Eq, PartialEq)]
 pub struct Orderbook {
     asks: BTreeMap<Decimal, Decimal>,
