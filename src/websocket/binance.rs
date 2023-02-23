@@ -1,19 +1,19 @@
 //! Types and async functions for connecting to the Binance websocket and maintaining
 //! a local orderbook which tracks remote state using diff channel.
-//! 
-//! Binance provides a public "diff depth" websocket channel which streams update 
+//!
+//! Binance provides a public "diff depth" websocket channel which streams update
 //! events with associated first- and last- update IDs. This enables our client
 //! to establish initial synchrony with the stream by making a separate (rest) request
 //! for an orderbook snapshot and then applying event updates which occur after this
 //! snapshot, discarding buffered events with a last_update_id from before that of the
-//! snapshot. In particular, in order to attach to the stream we must receive a 
-//! websocket event with first_update_id <= snapshot.update_id and 
+//! snapshot. In particular, in order to attach to the stream we must receive a
+//! websocket event with first_update_id <= snapshot.update_id and
 //! last_update_id >= snapshot.update_id + 1.
 
 use std::pin::Pin;
 use std::time::Duration;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use futures_util::{Stream, StreamExt};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -99,7 +99,7 @@ async fn process_events(
         }
         prev_last_update_id = last_update_id;
         orderbook.apply_updates(asks, bids);
-        tx.send(orderbook.truncate(depth)).await?;
+        tx.try_send(orderbook.to_truncated(depth))?;
     }
     Err(anyhow!("unexpected websocket connection close"))
 }
@@ -128,7 +128,7 @@ pub async fn run_client(
 
     let (ws_stream, _response) = connect_async(url).await?;
     let (_, read) = ws_stream.split();
-    
+
     // give the websocket a chance to buffer
     tokio::time::sleep(Duration::from_secs(3)).await;
 

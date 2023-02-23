@@ -8,12 +8,27 @@ use std::net::SocketAddr;
 use crate::utils::deserialize_using_parse;
 
 /// The supported exchanges.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Exchange {
     Binance,
     Bitstamp,
 }
 use Exchange::*;
+
+impl Default for Exchange {
+    fn default() -> Self {
+        Self::Binance
+    }
+}
+
+impl From<&Exchange> for String {
+    fn from(value: &Exchange) -> Self {
+        match &value {
+            Binance => "binance".into(),
+            Bitstamp => "bitstamp".into(),
+        }
+    }
+}
 
 impl std::str::FromStr for Exchange {
     type Err = anyhow::Error;
@@ -31,10 +46,19 @@ impl std::str::FromStr for Exchange {
 /// Also allows API client implementations to specify whether it's "ethbtc",
 /// "eth_btc" or "BTC-ETH" etc. We'll use lowercase internally and the type will
 /// enforce this.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Eq, PartialEq)]
 pub struct CurrencyPair {
     base: String,
     quote: String,
+}
+
+impl Default for CurrencyPair {
+    fn default() -> Self {
+        Self {
+            base: "eth".to_owned(),
+            quote: "btc".to_owned(),
+        }
+    }
 }
 
 impl CurrencyPair {
@@ -94,7 +118,7 @@ impl Config {
 }
 
 /// Parse the config file and validate it.
-/// 
+///
 /// # Panics
 /// Will panic on invalid config, for example an unsupported exchange, invalid
 /// currency_pair formatting or currency_pair not supported by an exchange.
