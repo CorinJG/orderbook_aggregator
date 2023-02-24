@@ -18,18 +18,18 @@ async fn main() -> anyhow::Result<()> {
     );
     let grpc_aggregator_service = grpc_server::OrderbookAggregatorService::new(tx);
 
-    let binance_ws = tokio::spawn(websocket::binance::run_client(
-        10,
-        "eth_btc".parse()?,
+    let binance_ws = websocket::binance::run_client(
+        config.depth,
+        config.currency_pair.clone(),
         ws_client_tx.clone(),
         config.ws_buffer_time_ms,
-    ));
-    let bitstamp_ws = tokio::spawn(websocket::bitstamp::run_client(
-        10,
-        "eth_btc".parse()?,
+    );
+    let bitstamp_ws = websocket::bitstamp::run_client(
+        config.depth,
+        config.currency_pair.clone(),
         ws_client_tx,
         config.ws_buffer_time_ms,
-    ));
+    );
 
     tokio::select! {
         r = binance_ws => println!("{r:?}"),

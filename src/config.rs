@@ -46,7 +46,7 @@ impl std::str::FromStr for Exchange {
 /// Also allows API client implementations to specify whether it's "ethbtc",
 /// "eth_btc" or "BTC-ETH" etc. We'll use lowercase internally and the type will
 /// enforce this.
-#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct CurrencyPair {
     base: String,
     quote: String,

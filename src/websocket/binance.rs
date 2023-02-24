@@ -99,6 +99,7 @@ async fn process_events(
                 return Err(anyhow!("missing event"));
             }
             synchronized = true;
+            println!("binance ws client synchronized");
         } else if first_update_id != prev_last_update_id + 1 {
             return Err(anyhow!("missing event, gap in sequence"));
         }
