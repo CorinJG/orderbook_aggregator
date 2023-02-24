@@ -43,18 +43,10 @@ pub struct Aggregator {
 }
 
 /// The status of the websocket client connections to their respective exchange websockets.
+#[derive(Default)]
 struct ConnectionStatus {
     client1: bool,
     client2: bool,
-}
-
-impl Default for ConnectionStatus {
-    fn default() -> Self {
-        Self {
-            client1: false,
-            client2: false,
-        }
-    }
 }
 
 /// Aggregated orderbook mapping (price, exchange) to quantity.
@@ -68,11 +60,11 @@ impl std::fmt::Debug for AggregatedOrderbook {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "AggregatedOrderbook {{ asks: {{ ")?;
         for ((p, e), q) in self.asks.iter() {
-            write!(f, "{}", format!("[{p}, {q}, {e:?}], "))?;
+            write!(f, "[{p}, {q}, {e:?}], ")?;
         }
         write!(f, "... }},\nbids: {{ ")?;
         for ((p, e), q) in self.bids.iter().rev() {
-            write!(f, "{}", format!("[{p}, {q}, {e:?}], "))?;
+            write!(f, "[{p}, {q}, {e:?}], ")?;
         }
         write!(f, "... }} }}")
     }
@@ -174,8 +166,8 @@ impl Aggregator {
             aggregated_orderbook: None,
             ws_client_rx,
             grpc_tx,
-            client1: client1,
-            client2: client2,
+            client1,
+            client2,
             connection_status: ConnectionStatus::default(),
         }
     }
@@ -206,9 +198,7 @@ impl Aggregator {
                         self.connection_status.client2 = true;
                     }
                     self.apply_updates(exchange, orderbook);
-                    if self.connection_status.client1 == true
-                        && self.connection_status.client2 == true
-                    {
+                    if self.connection_status.client1 && self.connection_status.client2 {
                         match self.grpc_tx.send(
                             self.aggregated_orderbook
                                 .as_ref()
