@@ -25,11 +25,11 @@ impl Debug for Orderbook {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Orderbook {{ asks: {{ ")?;
         for (p, q) in self.asks.iter() {
-            write!(f, "{}", format!("[{p}, {q}], "))?;
+            write!(f, "[{p}, {q}], ")?;
         }
         write!(f, "... }},\nbids: {{ ")?;
         for (p, q) in self.bids.iter().rev() {
-            write!(f, "{}", format!("[{p}, {q}], "))?;
+            write!(f, "[{p}, {q}], ")?;
         }
         write!(f, "... }} }}")
     }
@@ -40,11 +40,11 @@ impl Display for Orderbook {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Orderbook {{ asks: {{ ")?;
         for (p, q) in self.asks.iter().take(10) {
-            write!(f, "{}", format!("[{p}, {q}], "))?;
+            write!(f, "[{p}, {q}], ")?;
         }
         write!(f, "... }},\nbids: {{ ")?;
         for (p, q) in self.bids.iter().rev().take(10) {
-            write!(f, "{}", format!("[{p}, {q}], "))?;
+            write!(f, "[{p}, {q}], ")?;
         }
         write!(f, "... }} }}")
     }

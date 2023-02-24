@@ -41,7 +41,7 @@ impl OrderbookAggregator for OrderbookAggregatorService {
                         TrySendError::Full(..) => panic!("back-pressure on a grpc client channel"),
                         TrySendError::Closed(..) => {
                             println!("grpc client disconnected");
-                            return ();
+                            return;
                         }
                     }
                 }
