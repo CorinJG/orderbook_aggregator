@@ -118,6 +118,7 @@ async fn process_events(
             "websocket closed unexpectedly during synchronization"
         ));
     }
+    println!("bitstamp ws client synchronized");
 
     // internal state is now synchronized with the channel, continue processing remaining messages "ad infinitum"
     let mut prev_timestamp = initial_snapshot.microtimestamp;
