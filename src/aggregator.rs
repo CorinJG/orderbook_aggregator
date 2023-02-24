@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Formatter;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use rust_decimal::{prelude::*, Decimal};
 use rust_decimal_macros::dec;
 use tokio::sync::{broadcast::Sender, mpsc};
@@ -15,6 +15,7 @@ use crate::{
 };
 
 /// Messages from websocket clients to the aggregator (one way only).
+#[derive(Debug)]
 pub enum OrderbookUpdateMessage {
     // websocket client disconnected from ws channel
     Disconnect {
@@ -208,12 +209,15 @@ impl Aggregator {
                     if self.connection_status.client1 == true
                         && self.connection_status.client2 == true
                     {
-                        self.grpc_tx.send(
+                        match self.grpc_tx.send(
                             self.aggregated_orderbook
                                 .as_ref()
                                 .unwrap()
                                 .to_summary(self.depth),
-                        )?;
+                        ) {
+                            Ok(_) => (),  // todo logging 'sent summary to grpc'
+                            Err(_) => (), // todo logging: 'no summary sent - no grpc clients'
+                        };
                     }
                 }
             }

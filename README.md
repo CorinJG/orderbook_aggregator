@@ -25,7 +25,7 @@ grpcurl -plaintext -import-path ./proto -proto orderbook.proto  '[::]:50051' ord
 ```
 ## Documentation
 
-Documentation can be accessed with `cargo doc --open` (from manifest directory).
+Documentation can be viewed with `cargo doc --open`.
 
 ## Extensions
 

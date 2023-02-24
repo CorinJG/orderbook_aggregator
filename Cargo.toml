@@ -12,10 +12,6 @@ name = "mock_grpc_server"
 path = "src/examples/mock_grpc_server.rs"
 
 [[example]]
-name = "smoke_test"
-path = "src/examples/smoke_test.rs"
-
-[[example]]
 name = "binance_ws"
 path = "src/examples/binance_ws.rs"
 

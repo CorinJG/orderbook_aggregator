@@ -15,7 +15,7 @@
 use std::pin::Pin;
 use std::time::Duration;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use futures_util::{SinkExt, Stream, StreamExt};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -23,10 +23,12 @@ use tokio::{sync::mpsc, time::timeout};
 use tokio_tungstenite::connect_async;
 use tungstenite::{error::Error, protocol::Message};
 
-use crate::config::CurrencyPair;
+use crate::aggregator::OrderbookUpdateMessage::{self, *};
+use crate::config::{CurrencyPair, Exchange};
 use crate::orderbook::Orderbook;
 use crate::utils::deserialize_using_parse;
 
+const EXCHANGE: Exchange = Exchange::Bitstamp;
 const WS_BASE_URL: &str = "wss://ws.bitstamp.net";
 
 /// Type to deserialize a raw rest orderbook snapshot into.
@@ -65,7 +67,7 @@ async fn process_events(
     initial_snapshot: OrderbookSnapshot,
     depth: usize,
     expected_symbol: &str,
-    tx: mpsc::Sender<Orderbook>,
+    tx: mpsc::Sender<OrderbookUpdateMessage>,
 ) -> anyhow::Result<()> {
     let mut orderbook = Orderbook::from_asks_bids(initial_snapshot.asks, initial_snapshot.bids);
 
@@ -95,11 +97,15 @@ async fn process_events(
                 } else {
                     if !prior_event {
                         return Err(anyhow!(
-                            "buffered websocket messages all later than initial snapshot"
+                            "bitstamp synchronization failed: all buffered messages later than snapshot"
                         ));
                     }
                     orderbook.apply_updates(data.asks, data.bids);
-                    tx.try_send(orderbook.to_truncated(depth))?;
+                    tx.try_send(OrderbookUpdate {
+                        exchange: EXCHANGE,
+                        orderbook: orderbook.to_truncated(depth),
+                    })
+                    .context("bitstamp error sending downstream")?;
                     break;
                 }
             }
@@ -134,7 +140,11 @@ async fn process_events(
                 }
                 prev_timestamp = data.microtimestamp;
                 orderbook.apply_updates(data.asks, data.bids);
-                tx.send(orderbook.to_truncated(depth)).await?;
+                tx.try_send(OrderbookUpdate {
+                    exchange: EXCHANGE,
+                    orderbook: orderbook.to_truncated(depth),
+                })
+                .context("bitstamp error sending downstream")?;
             }
             "bts:subscription_succeeded" => (),
             other => return Err(anyhow!("unexpected event type: {other}")),
@@ -160,7 +170,8 @@ fn construct_subscription_message(symbol: &str) -> String {
 pub async fn run_client(
     depth: usize,
     symbol: CurrencyPair,
-    downstream_tx: mpsc::Sender<Orderbook>,
+    downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
+    ws_buffer_time: u64,
 ) -> anyhow::Result<()> {
     let connect_addr = WS_BASE_URL;
     let url = url::Url::parse(connect_addr)?;
@@ -175,7 +186,7 @@ pub async fn run_client(
         .await?;
 
     // give the websocket a chance to buffer
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_millis(ws_buffer_time)).await;
 
     // wrap the rest request in a timer so we aren't buffering indefinitely
     let initial_snapshot: OrderbookSnapshot = timeout(Duration::from_secs(5), async {
