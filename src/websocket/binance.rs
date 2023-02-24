@@ -1,19 +1,19 @@
 //! Types and async functions for connecting to the Binance websocket and maintaining
 //! a local orderbook which tracks remote state using diff channel.
-//! 
-//! Binance provides a public "diff depth" websocket channel which streams update 
+//!
+//! Binance provides a public "diff depth" websocket channel which streams update
 //! events with associated first- and last- update IDs. This enables our client
 //! to establish initial synchrony with the stream by making a separate (rest) request
 //! for an orderbook snapshot and then applying event updates which occur after this
 //! snapshot, discarding buffered events with a last_update_id from before that of the
-//! snapshot. In particular, in order to attach to the stream we must receive a 
-//! websocket event with first_update_id <= snapshot.update_id and 
+//! snapshot. In particular, in order to attach to the stream we must receive a
+//! websocket event with first_update_id <= snapshot.update_id and
 //! last_update_id >= snapshot.update_id + 1.
 
 use std::pin::Pin;
 use std::time::Duration;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use futures_util::{Stream, StreamExt};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -21,8 +21,13 @@ use tokio::{sync::mpsc, time::timeout};
 use tokio_tungstenite::connect_async;
 use tungstenite::{error::Error, protocol::Message};
 
-use crate::{config::CurrencyPair, orderbook::Orderbook};
+use crate::{
+    aggregator::OrderbookUpdateMessage::{self, *},
+    config::{CurrencyPair, Exchange},
+    orderbook::Orderbook,
+};
 
+const EXCHANGE: Exchange = Exchange::Binance;
 const WS_BASE_URL: &str = "wss://stream.binance.com:443/ws";
 
 /// Type to deserialize the initial Binance rest orderbook snapshot into.
@@ -60,7 +65,7 @@ async fn process_events(
     initial_snapshot: OrderbookSnapshot,
     depth: usize,
     expected_symbol: &str,
-    tx: mpsc::Sender<Orderbook>,
+    tx: mpsc::Sender<OrderbookUpdateMessage>,
 ) -> anyhow::Result<()> {
     let mut orderbook = Orderbook::from_asks_bids(initial_snapshot.asks, initial_snapshot.bids);
 
@@ -99,7 +104,11 @@ async fn process_events(
         }
         prev_last_update_id = last_update_id;
         orderbook.apply_updates(asks, bids);
-        tx.send(orderbook.truncate(depth)).await?;
+        tx.try_send(OrderbookUpdate {
+            exchange: EXCHANGE,
+            orderbook: orderbook.to_truncated(depth),
+        })
+        .context("binance error sending downstream")?;
     }
     Err(anyhow!("unexpected websocket connection close"))
 }
@@ -114,7 +123,8 @@ async fn process_events(
 pub async fn run_client(
     depth: usize,
     symbol: CurrencyPair,
-    downstream_tx: mpsc::Sender<Orderbook>,
+    downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
+    ws_buffer_time: u64,
 ) -> anyhow::Result<()> {
     let symbol_lower = [symbol.base(), symbol.quote()].join("");
     let symbol_upper = [
@@ -128,9 +138,9 @@ pub async fn run_client(
 
     let (ws_stream, _response) = connect_async(url).await?;
     let (_, read) = ws_stream.split();
-    
+
     // give the websocket a chance to buffer
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_millis(ws_buffer_time)).await;
 
     // wrap the rest request in a timer so we aren't buffering indefinitely
     let initial_snapshot: OrderbookSnapshot = timeout(Duration::from_secs(5), async {

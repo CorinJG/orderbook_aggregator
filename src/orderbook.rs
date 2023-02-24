@@ -82,7 +82,7 @@ impl Orderbook {
     }
 
     /// Return a new Orderbook with ask and bid halves truncated to given depth.
-    pub fn truncate(&self, depth: usize) -> Self {
+    pub fn to_truncated(&self, depth: usize) -> Self {
         Self {
             asks: self
                 .asks
@@ -98,6 +98,11 @@ impl Orderbook {
                 .map(|(&price, &quantity)| (price, quantity))
                 .collect(),
         }
+    }
+
+    /// Consumes the Orderbook, returning the asks and bids for Aggregator to process.
+    pub fn into_asks_bids(self) -> (BTreeMap<Decimal, Decimal>, BTreeMap<Decimal, Decimal>) {
+        (self.asks, self.bids)
     }
 }
 
@@ -186,6 +191,6 @@ mod tests {
             vec![(dec!(4), dec!(1)), (dec!(2), dec!(22)), (dec!(1), dec!(21))],
             vec![(dec!(5), dec!(1)), (dec!(4), dec!(2)), (dec!(6), dec!(2))],
         );
-        assert_eq!(target, ob.truncate(3));
+        assert_eq!(target, ob.to_truncated(3));
     }
 }

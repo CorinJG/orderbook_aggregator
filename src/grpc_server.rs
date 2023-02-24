@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Request, Response, Status};
@@ -11,7 +12,8 @@ use crate::proto::orderbook::{Empty, Summary};
 
 #[derive(Debug)]
 pub struct OrderbookAggregatorService {
-    // receiver halves used to notify connected rpc clients
+    // receiver halves created by .subscribe() are used to notify connected rpc clients
+    // there will be another sender outside
     client_updater: broadcast::Sender<Summary>,
 }
 
@@ -28,12 +30,21 @@ impl OrderbookAggregator for OrderbookAggregatorService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<Self::BookSummaryStream>, Status> {
+        println!("new grpc client connected");
         let (tx, rx) = mpsc::channel(4);
         // clone broadcast receiver for each client connected to this stream
         let mut client_updater = self.client_updater.subscribe();
         tokio::spawn(async move {
             while let Ok(summary) = client_updater.recv().await {
-                tx.send(Ok(summary)).await.unwrap();
+                if let Err(e) = tx.try_send(Ok(summary)) {
+                    match e {
+                        TrySendError::Full(..) => panic!("back-pressure on a grpc client channel"),
+                        TrySendError::Closed(..) => {
+                            println!("grpc client disconnected");
+                            return ();
+                        }
+                    }
+                }
             }
         });
 
