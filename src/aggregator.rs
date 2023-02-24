@@ -1,11 +1,17 @@
-/// Clients don't send diffs. They send orderbok snapshots truncated to <depth>.
-/// This enables the aggregator to always deduce the top-n asks or bids.
+//! Aggregator which receives asynchronous websocket client updates from multiple
+//! exchanges and aggregates into a single orderbook.
+//! 
+//! Clients don't send diffs. They send snapshots truncated to <depth>.
+//! This is sufficient for the aggregator to deduce the top-n asks or bids.
+//! 
+//! When websocket clients upstream become disconnected, they notify the
+//! aggregator and their data is dropped from the aggregated orderbook state.
+
 use std::collections::BTreeMap;
 use std::fmt::Formatter;
 
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use rust_decimal::{prelude::*, Decimal};
-use rust_decimal_macros::dec;
 use tokio::sync::{broadcast::Sender, mpsc};
 
 use crate::{
@@ -29,6 +35,7 @@ pub enum OrderbookUpdateMessage {
 }
 use OrderbookUpdateMessage::*;
 
+/// State and resources for the aggregator service.
 pub struct Aggregator {
     depth: usize,
     // aggreagator's internal state for the aggregated orderbook
@@ -42,7 +49,7 @@ pub struct Aggregator {
     connection_status: ConnectionStatus,
 }
 
-/// The status of the websocket client connections to their respective exchange websockets.
+/// The status of websocket client connections to their respective exchange websockets.
 #[derive(Default)]
 struct ConnectionStatus {
     client1: bool,
@@ -71,7 +78,7 @@ impl std::fmt::Debug for AggregatedOrderbook {
 }
 
 impl AggregatedOrderbook {
-    /// Set initial state from the first exchange websocket client to send an update.
+    /// Initialize state from a (first) update.
     fn from_exchange_orderbook(exchange: Exchange, orderbook: Orderbook) -> Self {
         let (asks, bids) = orderbook.into_asks_bids();
         Self {
@@ -86,28 +93,21 @@ impl AggregatedOrderbook {
         }
     }
 
-    /// As these updates are not deltas, first flush all existing orders for this exchange
-    /// and then update the aggregated orderbook with the latest orders.
+    /// As the client updates are snapshots and not deltas, flush all existing orders for the exchange
+    /// and then insert the latest orders.
     fn apply_updates(&mut self, exchange: Exchange, latest_orderbook: Orderbook) {
         self.flush_exchange_orders(exchange);
         let (asks, bids) = latest_orderbook.into_asks_bids();
         for (price, quantity) in asks {
-            if quantity == dec!(0) {
-                self.asks.remove(&(price, exchange));
-            } else {
-                self.asks.insert((price, exchange), quantity);
-            }
+            self.asks.insert((price, exchange), quantity);
         }
         for (price, quantity) in bids {
-            if quantity == dec!(0) {
-                self.bids.remove(&(price, exchange)); // None here may be because order outside initial snapshot depth
-            } else {
-                self.bids.insert((price, exchange), quantity);
-            }
+            self.bids.insert((price, exchange), quantity);
         }
     }
 
-    /// When an exchange client becomes disconnected, flush all of its orders.
+    /// Flush all orders from the aggregated orderbook for given exchange. The is required on every 
+    /// snapshot from a client as well as when a client becomes disconnected from it's websocket.
     fn flush_exchange_orders(&mut self, exchange: Exchange) {
         self.asks = BTreeMap::from_iter(
             self.asks
@@ -123,6 +123,7 @@ impl AggregatedOrderbook {
         );
     }
 
+    /// Construct a Summary from the aggregated orderbook.
     fn to_summary(&self, depth: usize) -> Summary {
         let spread = self.asks.keys().next().map(|p| p.0).unwrap()
             - self.bids.keys().rev().next().map(|p| p.0).unwrap();
@@ -181,10 +182,8 @@ impl Aggregator {
                     }
                     if exchange == self.client1 {
                         self.connection_status.client1 = false;
-                        // TODO todo tell grpc to drop clients
                     } else if exchange == self.client2 {
                         self.connection_status.client2 = false;
-                        // TODO tell grpc to drop clients
                     }
                 }
 
@@ -205,8 +204,8 @@ impl Aggregator {
                                 .unwrap()
                                 .to_summary(self.depth),
                         ) {
-                            Ok(_) => (),  // todo logging 'sent summary to grpc'
-                            Err(_) => (), // todo logging: 'no summary sent - no grpc clients'
+                            Ok(_) => (),  // logging: 'sent summary to grpc'
+                            Err(_) => (), // logging: 'no summary sent - no grpc clients'
                         };
                     }
                 }
@@ -215,11 +214,13 @@ impl Aggregator {
         Err(anyhow!("aggregator terminated unexpectedly"))
     }
 
+    /// Send an empty Summary message to clients for testing.
     pub fn send_test(&self) -> anyhow::Result<()> {
         self.grpc_tx.send(Summary::default())?;
         Ok(())
     }
 
+    /// Apply updates to the aggreagted orderbook using the latest snapshot from the exchange.
     fn apply_updates(&mut self, exchange: Exchange, latest_orderbook: Orderbook) {
         match self.aggregated_orderbook {
             Some(ref mut o) => {
