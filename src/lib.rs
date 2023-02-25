@@ -2,8 +2,13 @@ pub mod aggregator;
 pub mod config;
 pub mod grpc_server;
 pub mod orderbook;
-pub mod proto;
 pub mod websocket;
+
+pub mod proto {
+    pub mod orderbook {
+        tonic::include_proto!("orderbook");   
+    }
+}
 
 pub(crate) mod utils {
     use std::fmt::Display;
@@ -22,3 +27,4 @@ pub(crate) mod utils {
             .map_err(serde::de::Error::custom)
     }
 }
+
