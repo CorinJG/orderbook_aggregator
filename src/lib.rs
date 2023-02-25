@@ -6,7 +6,7 @@ pub mod websocket;
 
 pub mod proto {
     pub mod orderbook {
-        tonic::include_proto!("orderbook");   
+        tonic::include_proto!("orderbook");
     }
 }
 
@@ -27,4 +27,3 @@ pub(crate) mod utils {
             .map_err(serde::de::Error::custom)
     }
 }
-

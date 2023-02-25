@@ -8,7 +8,8 @@ use std::net::SocketAddr;
 use crate::utils::deserialize_using_parse;
 
 /// The supported exchanges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all(deserialize = "lowercase"))]
 pub enum Exchange {
     Binance,
     Bitstamp,
@@ -93,7 +94,7 @@ pub struct Config {
     #[serde(deserialize_with = "deserialize_using_parse")]
     pub currency_pair: CurrencyPair,
     pub depth: usize,
-    pub exchanges: Vec<String>,
+    pub exchanges: Vec<Exchange>,
     pub ws_buffer_time_ms: u64,
 }
 
@@ -103,7 +104,7 @@ impl Default for Config {
             addr: "127.0.0.1:50051".parse().unwrap(),
             currency_pair: "eth_btc".parse().unwrap(),
             depth: 10,
-            exchanges: vec!["binance".into(), "bitstamp".into()],
+            exchanges: vec![Binance, Bitstamp],
             ws_buffer_time_ms: 3_000,
         }
     }
@@ -112,9 +113,7 @@ impl Default for Config {
 impl Config {
     /// Validate the configuration.
     fn validate(self) -> anyhow::Result<Self> {
-        for exchange in &self.exchanges {
-            exchange.parse::<Exchange>()?;
-        }
+        // todo
         Ok(self)
     }
 }

@@ -13,8 +13,8 @@ async fn main() -> anyhow::Result<()> {
         config.depth,
         rx,
         tx.clone(),
-        config.exchanges[0].parse().unwrap(),
-        config.exchanges[1].parse().unwrap(),
+        config.exchanges[0],
+        config.exchanges[1],
     );
     let grpc_aggregator_service = grpc_server::OrderbookAggregatorService::new(tx);
 
