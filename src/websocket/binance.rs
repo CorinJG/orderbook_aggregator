@@ -16,7 +16,7 @@
 use std::pin::Pin;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+use anyhow::{bail, Context};
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
 use rust_decimal::Decimal;
@@ -30,7 +30,7 @@ use crate::{
     orderbook::Orderbook,
 };
 
-use super::{OrderbookWebsocketClient, WebsocketConnectionResult, WsWriter};
+use super::{OrderbookWebsocketClient, WebsocketConnectionResult, WebsocketDisconnectError, WsWriter};
 
 const EXCHANGE: Exchange = Exchange::Binance;
 const WS_BASE_URL: &str = "wss://stream.binance.com:443/ws";
@@ -150,10 +150,10 @@ impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
                 asks,
             } = serde_json::from_slice(&message.into_data())?;
             if event != "depthUpdate" {
-                return Err(anyhow!("unexpected event field: {event}"));
+                bail!("unexpected event field: {event}");
             }
             if symbol != self.symbol_upper {
-                return Err(anyhow!("unexpected symbol field: {symbol}"));
+                bail!("unexpected symbol field: {symbol}");
             }
             // discard events where last_update_id is older than rest response update_id
             if last_update_id <= prev_last_update_id {
@@ -161,12 +161,12 @@ impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
             }
             if !synchronized {
                 if first_update_id > prev_last_update_id + 1 {
-                    return Err(anyhow!("missing event"));
+                    bail!("missing event");
                 }
                 synchronized = true;
                 println!("binance ws client synchronized");
             } else if first_update_id != prev_last_update_id + 1 {
-                return Err(anyhow!("missing event, gap in sequence"));
+                bail!("missing event, gap in sequence");
             }
             prev_last_update_id = last_update_id;
             orderbook.apply_updates(asks, bids);
@@ -177,6 +177,6 @@ impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
                 })
                 .context("binance error sending downstream")?;
         }
-        Err(anyhow!("unexpected websocket connection close"))
+        bail!(WebsocketDisconnectError(EXCHANGE));
     }
 }

@@ -15,7 +15,7 @@
 use std::pin::Pin;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context};
+use anyhow::{bail, Context};
 use async_trait::async_trait;
 use futures_util::{SinkExt, Stream, StreamExt};
 use rust_decimal::Decimal;
@@ -27,6 +27,8 @@ use crate::aggregator::OrderbookUpdateMessage::{self, *};
 use crate::config::{CurrencyPair, Exchange};
 use crate::orderbook::Orderbook;
 use crate::utils::deserialize_using_parse;
+
+use super::{OrderbookWebsocketClient, WebsocketConnectionResult, WebsocketDisconnectError, WsWriter};
 
 const EXCHANGE: Exchange = Exchange::Bitstamp;
 const WS_BASE_URL: &str = "wss://ws.bitstamp.net";
@@ -88,7 +90,6 @@ impl BitstampOrderbookWebsocketClient {
     }
 }
 
-use super::{OrderbookWebsocketClient, WebsocketConnectionResult, WsWriter};
 #[async_trait]
 impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
     type OrderbookSnapshot = OrderbookSnapshot;
@@ -149,7 +150,7 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
             match event.as_ref() {
                 "data" => {
                     if channel != expected_channel {
-                        return Err(anyhow!("unexpected channel: {channel}"));
+                        bail!("unexpected channel: {channel}");
                     }
                     if data.microtimestamp <= initial_snapshot.microtimestamp {
                         if !prior_event {
@@ -158,9 +159,9 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
                         continue;
                     } else {
                         if !prior_event {
-                            return Err(anyhow!(
+                            bail!(
                                 "bitstamp synchronization failed: all buffered messages later than snapshot"
-                            ));
+                            );
                         }
                         orderbook.apply_updates(data.asks, data.bids);
                         self.downstream_tx
@@ -173,13 +174,13 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
                     }
                 }
                 "bts:subscription_succeeded" => (),
-                other => return Err(anyhow!("unexpected event type: {other}")),
+                other => bail!("unexpected event type: {other}"),
             }
         }
         if !prior_event {
-            return Err(anyhow!(
+            bail!(
                 "websocket closed unexpectedly during synchronization"
-            ));
+            );
         }
         println!("bitstamp ws client synchronized");
 
@@ -197,10 +198,10 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
             match event.as_ref() {
                 "data" => {
                     if channel != expected_channel {
-                        return Err(anyhow!("unexpected channel: {channel}"));
+                        bail!("unexpected channel: {channel}");
                     }
                     if data.microtimestamp < prev_timestamp {
-                        return Err(anyhow!("websocket sent an event out of sequence"));
+                        bail!("websocket sent an event out of sequence");
                     }
                     prev_timestamp = data.microtimestamp;
                     orderbook.apply_updates(data.asks, data.bids);
@@ -212,9 +213,9 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
                         .context("bitstamp error sending downstream")?;
                 }
                 "bts:subscription_succeeded" => (),
-                other => return Err(anyhow!("unexpected event type: {other}")),
+                other => bail!("unexpected event type: {other}"),
             }
         }
-        Err(anyhow!("unexpected websocket connection close"))
+        bail!(WebsocketDisconnectError(EXCHANGE));
     }
 }

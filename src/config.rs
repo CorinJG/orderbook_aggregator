@@ -1,6 +1,6 @@
 //! Types and functions for parsing and validating configuration from a YAML file.
 
-use anyhow::anyhow;
+use anyhow::bail;
 use regex::Regex;
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -37,7 +37,7 @@ impl std::str::FromStr for Exchange {
         match exchange.trim().to_lowercase().as_ref() {
             "binance" => Ok(Binance),
             "bitstamp" => Ok(Bitstamp),
-            _ => Err(anyhow!("exchange not implemented: {exchange}")),
+            _ => bail!("exchange not implemented: {exchange}"),
         }
     }
 }
@@ -76,7 +76,7 @@ impl std::str::FromStr for CurrencyPair {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let re = Regex::new(r"^[a-z]{3,4}_[a-z]{3,4}$").unwrap();
         if !re.is_match(s) {
-            return Err(anyhow!("invalid currency_pair format: {s}"));
+            bail!("invalid currency_pair format: {s}");
         }
         let mut assets = s.splitn(2, '_');
         Ok(Self {

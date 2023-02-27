@@ -16,12 +16,22 @@ pub mod bitstamp;
 use std::pin::Pin;
 use std::time::Duration;
 
+use anyhow::bail;
 use async_trait::async_trait;
 use futures_util::{pin_mut, stream::SplitSink, Stream, StreamExt};
 use serde::de::DeserializeOwned;
+use thiserror::Error;
 use tokio::{net::TcpStream, time::timeout};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tungstenite::{error::Error, http, protocol::Message};
+
+use crate::config::Exchange;
+
+/// This websocket client error warrants reconnection (as opposed to, say, a schema error which would suggest 
+/// incorrect client implementation).
+#[derive(Debug, Error)]
+#[error("{0:?} websocket client disconnected unexpectedly")]
+struct WebsocketDisconnectError(Exchange);
 
 type WebsocketConnectionResult = Result<
     (
@@ -63,19 +73,32 @@ pub trait OrderbookWebsocketClient {
     /// Manage the websocket connection. If the client becomes disconnected from the websocket, attempt
     /// reconnection after 1s delay.
     async fn manage_connection(&self) -> anyhow::Result<()> {
-        // todo handle the disconnect error and do a loop for this async fn
-        let (ws_stream, _response) = self.connect().await?;
-        let (write, read) = ws_stream.split();
-        pin_mut!(write);
+        loop {
+            let (ws_stream, _response) = self.connect().await?;
+            let (write, read) = ws_stream.split();
+            pin_mut!(write);
 
-        self.subscribe(write.as_mut()).await?;
-        self.buffer_messages().await;
+            self.subscribe(write.as_mut()).await?;
+            self.buffer_messages().await;
 
-        // wrap the rest request in a timer so we aren't buffering indefinitely
-        let initial_snapshot: Option<Self::OrderbookSnapshot> =
-            timeout(Duration::from_millis(3_000), self.request_snapshot()).await??;
+            // wrap the rest request in a timer so we aren't buffering indefinitely
+            let initial_snapshot: Option<Self::OrderbookSnapshot> =
+                timeout(Duration::from_millis(3_000), self.request_snapshot()).await??;
 
-        tokio::pin!(read);
-        self.process_messages(read.as_mut(), initial_snapshot).await
+            tokio::pin!(read);
+            match self.process_messages(read.as_mut(), initial_snapshot).await {
+                Ok(_) => unreachable!("client process_messages loop should error on completion"),
+                Err(e) => {
+                    if let Some(_) = e.downcast_ref::<WebsocketDisconnectError>() {
+                        eprintln!("{e}");
+                        // attempt reconnection after a short delay
+                        tokio::time::sleep(Duration::from_millis(1_000)).await;
+                        continue;
+                    } else {
+                        bail!("ws client error: {e}")
+                    }
+                },
+            }
+        }
     }
 }
