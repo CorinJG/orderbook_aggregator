@@ -21,6 +21,7 @@ path = "src/examples/bitstamp_ws.rs"
 
 [dependencies]
 anyhow = "1.0.69"
+async-trait = "0.1.64"
 futures-util = "0.3.26"
 prost = "0.11.6"
 regex = "1.7.1"

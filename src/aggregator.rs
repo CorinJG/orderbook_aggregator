@@ -1,9 +1,9 @@
 //! Aggregator which receives asynchronous websocket client updates from multiple
 //! exchanges and aggregates into a single orderbook.
-//! 
+//!
 //! Clients don't send diffs. They send snapshots truncated to <depth>.
 //! This is sufficient for the aggregator to deduce the top-n asks or bids.
-//! 
+//!
 //! When websocket clients upstream become disconnected, they notify the
 //! aggregator and their data is dropped from the aggregated orderbook state.
 
@@ -106,7 +106,7 @@ impl AggregatedOrderbook {
         }
     }
 
-    /// Flush all orders from the aggregated orderbook for given exchange. The is required on every 
+    /// Flush all orders from the aggregated orderbook for given exchange. The is required on every
     /// snapshot from a client as well as when a client becomes disconnected from it's websocket.
     fn flush_exchange_orders(&mut self, exchange: Exchange) {
         self.asks = BTreeMap::from_iter(
