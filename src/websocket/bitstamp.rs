@@ -1,5 +1,5 @@
-//! Types and async functions for connecting to the Bitstamp websocket and maintaining
-//! a local orderbook which tracks remote state using diff channel.
+//! Types and [OrderbookWebsocketClient] trait implementation connecting to the Bitstamp websocket 
+//! and maintaining a local orderbook which tracks remote state using diff channel.
 //!
 //! Bitstamp uses timestamps in its orderbook diff channel. In order to establish initial
 //! synchronization with the event stream, we make a separate restful API request to get
@@ -16,11 +16,11 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
+use async_trait::async_trait;
 use futures_util::{SinkExt, Stream, StreamExt};
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use tokio::{sync::mpsc, time::timeout};
-use tokio_tungstenite::connect_async;
+use tokio::sync::mpsc;
 use tungstenite::{error::Error, protocol::Message};
 
 use crate::aggregator::OrderbookUpdateMessage::{self, *};
@@ -33,7 +33,7 @@ const WS_BASE_URL: &str = "wss://ws.bitstamp.net";
 
 /// Type to deserialize a raw rest orderbook snapshot into.
 #[derive(Debug, Deserialize)]
-struct OrderbookSnapshot {
+pub struct OrderbookSnapshot {
     #[serde(deserialize_with = "deserialize_using_parse")]
     microtimestamp: u64,
     asks: Vec<(Decimal, Decimal)>,
@@ -45,113 +45,17 @@ struct OrderbookSnapshot {
 struct WsMessage {
     event: String,
     channel: String,
-    data: Data,
+    data: WsMessageData,
 }
 
 /// The inner data payload of a websocket message.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct Data {
+struct WsMessageData {
     #[serde(deserialize_with = "deserialize_using_parse")]
     microtimestamp: u64,
     bids: Vec<(Decimal, Decimal)>,
     asks: Vec<(Decimal, Decimal)>,
-}
-
-/// Process the websocket events, applying updates with timestamps after the initial snapshot
-/// to the local orderbook state.
-/// On update, forward the top-<depth> orderbook downstream.
-/// Performs validation of channel, event type and symbol and verifies timestamps are increasing.
-async fn process_events(
-    mut read: Pin<&mut impl Stream<Item = Result<Message, Error>>>,
-    initial_snapshot: OrderbookSnapshot,
-    depth: usize,
-    expected_symbol: &str,
-    tx: mpsc::Sender<OrderbookUpdateMessage>,
-) -> anyhow::Result<()> {
-    let mut orderbook = Orderbook::from_asks_bids(initial_snapshot.asks, initial_snapshot.bids);
-
-    let expected_channel = format!("diff_order_book_{expected_symbol}");
-    // flag for the websocket has received at least one event older than snapshot
-    let mut prior_event = false;
-    // break once we establish inital synchrony as the validation logic is different after this point
-    while let Some(message) = read.next().await.transpose()? {
-        if message.is_ping() || message.is_pong() {
-            continue;
-        }
-        let WsMessage {
-            event,
-            data,
-            channel,
-        } = serde_json::from_slice(&message.into_data())?;
-        match event.as_ref() {
-            "data" => {
-                if channel != expected_channel {
-                    return Err(anyhow!("unexpected channel: {channel}"));
-                }
-                if data.microtimestamp <= initial_snapshot.microtimestamp {
-                    if !prior_event {
-                        prior_event = true;
-                    }
-                    continue;
-                } else {
-                    if !prior_event {
-                        return Err(anyhow!(
-                            "bitstamp synchronization failed: all buffered messages later than snapshot"
-                        ));
-                    }
-                    orderbook.apply_updates(data.asks, data.bids);
-                    tx.try_send(OrderbookUpdate {
-                        exchange: EXCHANGE,
-                        orderbook: orderbook.to_truncated(depth),
-                    })
-                    .context("bitstamp error sending downstream")?;
-                    break;
-                }
-            }
-            "bts:subscription_succeeded" => (),
-            other => return Err(anyhow!("unexpected event type: {other}")),
-        }
-    }
-    if !prior_event {
-        return Err(anyhow!(
-            "websocket closed unexpectedly during synchronization"
-        ));
-    }
-    println!("bitstamp ws client synchronized");
-
-    // internal state is now synchronized with the channel, continue processing remaining messages "ad infinitum"
-    let mut prev_timestamp = initial_snapshot.microtimestamp;
-    while let Some(message) = read.next().await.transpose()? {
-        if message.is_ping() || message.is_pong() {
-            continue;
-        }
-        let WsMessage {
-            event,
-            data,
-            channel,
-        } = serde_json::from_slice(&message.into_data())?;
-        match event.as_ref() {
-            "data" => {
-                if channel != expected_channel {
-                    return Err(anyhow!("unexpected channel: {channel}"));
-                }
-                if data.microtimestamp < prev_timestamp {
-                    return Err(anyhow!("websocket sent an event out of sequence"));
-                }
-                prev_timestamp = data.microtimestamp;
-                orderbook.apply_updates(data.asks, data.bids);
-                tx.try_send(OrderbookUpdate {
-                    exchange: EXCHANGE,
-                    orderbook: orderbook.to_truncated(depth),
-                })
-                .context("bitstamp error sending downstream")?;
-            }
-            "bts:subscription_succeeded" => (),
-            other => return Err(anyhow!("unexpected event type: {other}")),
-        }
-    }
-    Err(anyhow!("unexpected websocket connection close"))
 }
 
 /// Construct a websocket diff stream subscription message for the given symbol.
@@ -161,52 +65,156 @@ fn construct_subscription_message(symbol: &str) -> String {
     format!("{front}{symbol}{back}")
 }
 
-/// Long-running websocket client tracking remote orderbook state locally using a diff/delta
-/// event stream. This requires initially buffering event updates whilst we await an initial snapshot
-/// from a restful endpoint.
-/// After an initial orderbook snapshot has arrived can being processing buffered websocket events.
-/// Returns with error on disconnection or invalid state.
-/// It's the responsibility of the calling client to attempt reconnection.
-/// Forwards top-<depth> [Orderbook]s to the channel provided.
-pub async fn run_client(
+pub struct BitstampOrderbookWebsocketClient {
     depth: usize,
-    symbol: CurrencyPair,
+    symbol: String,
     downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
-    ws_buffer_time: u64,
-) -> anyhow::Result<()> {
-    let connect_addr = WS_BASE_URL;
-    let url = url::Url::parse(connect_addr)?;
+    ws_buffer_time_ms: u64,
+}
 
-    let (ws_stream, _response) = connect_async(url).await?;
-    let (mut write, read) = ws_stream.split();
+impl BitstampOrderbookWebsocketClient {
+    pub fn new(
+        depth: usize,
+        currency_pair: CurrencyPair,
+        downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
+        ws_buffer_time_ms: u64,
+    ) -> Self {
+        Self {
+            depth,
+            symbol: [currency_pair.base(), currency_pair.quote()].join(""),
+            downstream_tx,
+            ws_buffer_time_ms,
+        }
+    }
+}
 
-    let symbol_lower = [symbol.base(), symbol.quote()].join("");
-    let subscribe_message = construct_subscription_message(&symbol_lower);
-    write
-        .send(tungstenite::Message::binary(subscribe_message))
-        .await?;
+use super::{OrderbookWebsocketClient, WebsocketConnectionResult, WsWriter};
+#[async_trait]
+impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
+    type OrderbookSnapshot = OrderbookSnapshot;
 
-    // give the websocket a chance to buffer
-    tokio::time::sleep(Duration::from_millis(ws_buffer_time)).await;
+    async fn connect(&self) -> WebsocketConnectionResult {
+        let connect_addr = WS_BASE_URL;
+        tokio_tungstenite::connect_async(connect_addr).await
+    }
 
-    // wrap the rest request in a timer so we aren't buffering indefinitely
-    let initial_snapshot: OrderbookSnapshot = timeout(Duration::from_secs(5), async {
-        reqwest::get(format!(
-            "https://www.bitstamp.net/api/v2/order_book/{symbol_lower}/"
+    async fn subscribe(&self, mut write: Pin<&mut WsWriter>) -> anyhow::Result<()> {
+        let subscribe_message = construct_subscription_message(&self.symbol);
+        Ok(write
+            .send(tungstenite::Message::binary(subscribe_message))
+            .await?)
+    }
+
+    async fn buffer_messages(&self) {
+        tokio::time::sleep(Duration::from_millis(self.ws_buffer_time_ms)).await;
+    }
+
+    async fn request_snapshot(&self) -> anyhow::Result<Option<OrderbookSnapshot>> {
+        Ok(Some(
+            reqwest::get(format!(
+                "https://www.bitstamp.net/api/v2/order_book/{}/",
+                self.symbol
+            ))
+            .await?
+            .json()
+            .await?,
         ))
-        .await?
-        .json()
-        .await
-    })
-    .await??;
+    }
 
-    tokio::pin!(read);
-    process_events(
-        read.as_mut(),
-        initial_snapshot,
-        depth,
-        &symbol_lower,
-        downstream_tx,
-    )
-    .await
+    /// Process the websocket events, applying updates with timestamps after the initial snapshot
+    /// to the local orderbook state.
+    /// On update, forward the top-<depth> orderbook downstream.
+    /// Performs validation of channel, event type and symbol and verifies timestamps are increasing.
+    async fn process_messages(
+        &self,
+        mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
+        initial_snapshot: Option<Self::OrderbookSnapshot>,
+    ) -> anyhow::Result<()> {
+        let initial_snapshot = initial_snapshot.unwrap();
+        let mut orderbook = Orderbook::from_asks_bids(initial_snapshot.asks, initial_snapshot.bids);
+
+        let expected_channel = format!("diff_order_book_{}", self.symbol);
+        // flag for the websocket has received at least one event older than snapshot
+        let mut prior_event = false;
+        // break once we establish inital synchrony as the validation logic is different after this point
+        while let Some(message) = read.next().await.transpose()? {
+            if message.is_ping() || message.is_pong() {
+                continue;
+            }
+            let WsMessage {
+                event,
+                data,
+                channel,
+            } = serde_json::from_slice(&message.into_data())?;
+            match event.as_ref() {
+                "data" => {
+                    if channel != expected_channel {
+                        return Err(anyhow!("unexpected channel: {channel}"));
+                    }
+                    if data.microtimestamp <= initial_snapshot.microtimestamp {
+                        if !prior_event {
+                            prior_event = true;
+                        }
+                        continue;
+                    } else {
+                        if !prior_event {
+                            return Err(anyhow!(
+                                "bitstamp synchronization failed: all buffered messages later than snapshot"
+                            ));
+                        }
+                        orderbook.apply_updates(data.asks, data.bids);
+                        self.downstream_tx
+                            .try_send(OrderbookUpdate {
+                                exchange: EXCHANGE,
+                                orderbook: orderbook.to_truncated(self.depth),
+                            })
+                            .context("bitstamp error sending downstream")?;
+                        break;
+                    }
+                }
+                "bts:subscription_succeeded" => (),
+                other => return Err(anyhow!("unexpected event type: {other}")),
+            }
+        }
+        if !prior_event {
+            return Err(anyhow!(
+                "websocket closed unexpectedly during synchronization"
+            ));
+        }
+        println!("bitstamp ws client synchronized");
+
+        // internal state is now synchronized with the channel, continue processing remaining messages "ad infinitum"
+        let mut prev_timestamp = initial_snapshot.microtimestamp;
+        while let Some(message) = read.next().await.transpose()? {
+            if message.is_ping() || message.is_pong() {
+                continue;
+            }
+            let WsMessage {
+                event,
+                data,
+                channel,
+            } = serde_json::from_slice(&message.into_data())?;
+            match event.as_ref() {
+                "data" => {
+                    if channel != expected_channel {
+                        return Err(anyhow!("unexpected channel: {channel}"));
+                    }
+                    if data.microtimestamp < prev_timestamp {
+                        return Err(anyhow!("websocket sent an event out of sequence"));
+                    }
+                    prev_timestamp = data.microtimestamp;
+                    orderbook.apply_updates(data.asks, data.bids);
+                    self.downstream_tx
+                        .try_send(OrderbookUpdate {
+                            exchange: EXCHANGE,
+                            orderbook: orderbook.to_truncated(self.depth),
+                        })
+                        .context("bitstamp error sending downstream")?;
+                }
+                "bts:subscription_succeeded" => (),
+                other => return Err(anyhow!("unexpected event type: {other}")),
+            }
+        }
+        Err(anyhow!("unexpected websocket connection close"))
+    }
 }
