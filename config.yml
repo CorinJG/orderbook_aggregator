@@ -1,6 +1,6 @@
 addr: 0.0.0.0:50051
 currency_pair: eth_btc
-depth: 2
+depth: 10
 exchanges:
   - binance
   - bitstamp
