@@ -1,11 +1,10 @@
-//! Websocket client implementations to track the state of orderbooks using the exchange's
-//! websocket API.
+//! This module contains websocket client implementations to convert snapshots and/or deltas
+//! into an internal standard message protocol.
 //!
-//! Running clients forward orderbook snapshots truncated to a specified depth downstream
-//! using a channel provided by users.
+//! Running clients forward [crate::messages::OrderbookUpdateMessage]s downstream using a channel provided.
 //!
 //! When available, client implementations should prefer to subscribe to an orderbook's
-//! diff/delta channel, forwarding snapshots whenever update events are received. Otherwise
+//! diff/delta channel, forwarding deltas whenever updates are received. Otherwise
 //! if an exchange only supports a channel which sends the client orderbook snapshots at
 //! fixed intervals, downstream subscribers will receive latest snapshots at fixed
 //! intervals.
@@ -27,11 +26,14 @@ use tungstenite::{error::Error, http, protocol::Message};
 
 use crate::config::Exchange;
 
-/// This websocket client error warrants reconnection (as opposed to, say, a schema error which would suggest 
-/// incorrect client implementation).
+// The two websocket client errors which warrant reconnection attempt.
 #[derive(Debug, Error)]
-#[error("{0:?} websocket client disconnected unexpectedly")]
-struct WebsocketDisconnectError(Exchange);
+enum WebsocketClientError {
+    #[error("{0:?} websocket client disconnected unexpectedly")]
+    DisconnectError(Exchange),
+    #[error("{0:?} synchronization error")]
+    SynchronizationError(Exchange),
+}
 
 type WebsocketConnectionResult = Result<
     (
@@ -46,8 +48,8 @@ type WsWriter = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 /// Trait for orderbook websocket clients.
 #[async_trait]
 pub trait OrderbookWebsocketClient {
-    /// The deserialization target for the rest snapshot;
-    type OrderbookSnapshot: DeserializeOwned + Send;
+    /// The deserialization target type for the rest snapshot;
+    type RawOrderbookSnapshot: DeserializeOwned + Send;
 
     /// Connect to the websocket.
     async fn connect(&self) -> WebsocketConnectionResult;
@@ -60,18 +62,24 @@ pub trait OrderbookWebsocketClient {
 
     /// Get the initial orderbook snapshot via a rest request. If the initial snapshot is sent as a first
     /// message in the websocket channel, this is a no-op.
-    async fn request_snapshot(&self) -> anyhow::Result<Option<Self::OrderbookSnapshot>>;
+    async fn request_snapshot(&self) -> anyhow::Result<Option<Self::RawOrderbookSnapshot>>;
+
+    /// For websocket clients which must reconcile an initial rest snapshot with buffered websocket messages.
+    async fn synchronize(
+        &self,
+        read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
+        initial_snapshot: Option<Self::RawOrderbookSnapshot>,
+    ) -> anyhow::Result<()>;
 
     /// Long-running task to process all messages arriving on the websocket, including those buffered
     /// before obtaining an initial snapshot to sychronize with.
     async fn process_messages(
         &self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
-        initial_snapshot: Option<Self::OrderbookSnapshot>,
     ) -> anyhow::Result<()>;
 
-    /// Manage the websocket connection. If the client becomes disconnected from the websocket, attempt
-    /// reconnection after 1s delay.
+    /// Manage the websocket connection. If the synchronization fails or the client becomes disconnected,
+    /// attempt reconnection after a short delay.
     async fn manage_connection(&self) -> anyhow::Result<()> {
         loop {
             let (ws_stream, _response) = self.connect().await?;
@@ -82,22 +90,33 @@ pub trait OrderbookWebsocketClient {
             self.buffer_messages().await;
 
             // wrap the rest request in a timer so we aren't buffering indefinitely
-            let initial_snapshot: Option<Self::OrderbookSnapshot> =
+            let initial_snapshot: Option<Self::RawOrderbookSnapshot> =
                 timeout(Duration::from_millis(3_000), self.request_snapshot()).await??;
 
             tokio::pin!(read);
-            match self.process_messages(read.as_mut(), initial_snapshot).await {
+            if let Err(e) = self.synchronize(read.as_mut(), initial_snapshot).await {
+                eprintln!("{e}");
+                if e.downcast_ref::<WebsocketClientError>().is_some() {
+                    // attempt reconnection after a short delay
+                    tokio::time::sleep(Duration::from_millis(1_000)).await;
+                    continue;
+                } else {
+                    bail!(e)
+                }
+            }
+
+            match self.process_messages(read.as_mut()).await {
                 Ok(_) => unreachable!("client process_messages loop should error on completion"),
                 Err(e) => {
-                    if let Some(_) = e.downcast_ref::<WebsocketDisconnectError>() {
-                        eprintln!("{e}");
+                    eprintln!("{e}");
+                    if e.downcast_ref::<WebsocketClientError>().is_some() {
                         // attempt reconnection after a short delay
                         tokio::time::sleep(Duration::from_millis(1_000)).await;
                         continue;
                     } else {
-                        bail!("ws client error: {e}")
+                        bail!(e)
                     }
-                },
+                }
             }
         }
     }

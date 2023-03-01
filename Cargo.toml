@@ -11,14 +11,6 @@ path = "src/bin/service.rs"
 name = "mock_grpc_server"
 path = "src/examples/mock_grpc_server.rs"
 
-[[example]]
-name = "binance_ws"
-path = "src/examples/binance_ws.rs"
-
-[[example]]
-name = "bitstamp_ws"
-path = "src/examples/bitstamp_ws.rs"
-
 [dependencies]
 anyhow = "1.0.69"
 async-trait = "0.1.64"
