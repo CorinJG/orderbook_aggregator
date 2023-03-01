@@ -1,63 +1,40 @@
-//! Aggregator which receives asynchronous websocket client updates from multiple
-//! exchanges and aggregates into a single orderbook.
+//! Aggregator which receives websocket client updates from multiple exchanges and aggregates
+//! into a single orderbook. Exchange clients upstream send [OrderbookUpdateMessage]s.
 //!
-//! Clients don't send diffs. They send snapshots truncated to <depth>.
-//! This is sufficient for the aggregator to deduce the top-n asks or bids.
-//!
-//! When websocket clients upstream become disconnected, they notify the
-//! aggregator and their data is dropped from the aggregated orderbook state.
+//! When websocket clients become disconnected, they notify the aggregator and their data is
+//! dropped from the aggregated orderbook.
 
 use std::collections::BTreeMap;
 use std::fmt::Formatter;
 
-use anyhow::anyhow;
+use anyhow::bail;
 use rust_decimal::{prelude::*, Decimal};
+use rust_decimal_macros::dec;
 use tokio::sync::{broadcast, mpsc};
+
 
 use crate::{
     config::Exchange,
-    orderbook::Orderbook,
+    messages::{
+        OrderbookSnapshot,
+        OrderbookUpdateMessage::{self, *},
+    },
     proto::orderbook::{Level, Summary},
 };
-
-/// Messages from websocket clients to the aggregator (one way only).
-#[derive(Debug)]
-pub enum OrderbookUpdateMessage {
-    // websocket client disconnected from ws channel
-    Disconnect {
-        exchange: Exchange,
-    },
-    // the ws client's latest updated depth-n orderbook, also signals that the ws client is connected
-    OrderbookUpdate {
-        exchange: Exchange,
-        orderbook: Orderbook,
-    },
-}
-use OrderbookUpdateMessage::*;
 
 /// State and resources for the aggregator service.
 pub struct Aggregator {
     depth: usize,
-    // aggreagator's internal state for the aggregated orderbook
-    aggregated_orderbook: Option<AggregatedOrderbook>,
-    client1: Exchange,
-    client2: Exchange,
+    // aggregator's internal state for the aggregated orderbook
+    aggregated_orderbook: AggregatedOrderbook,
     // receive updates from websocket clients
     ws_client_rx: mpsc::Receiver<OrderbookUpdateMessage>,
     // send updates to the gRPC server
     grpc_tx: broadcast::Sender<Summary>,
-    connection_status: ConnectionStatus,
-}
-
-/// The status of websocket client connections to their respective exchange websockets.
-#[derive(Default)]
-struct ConnectionStatus {
-    client1: bool,
-    client2: bool,
 }
 
 /// Aggregated orderbook mapping (price, exchange) to quantity.
-#[derive(Eq, PartialEq)]
+#[derive(Default)]
 struct AggregatedOrderbook {
     asks: BTreeMap<(Decimal, Exchange), Decimal>,
     bids: BTreeMap<(Decimal, Exchange), Decimal>,
@@ -85,37 +62,42 @@ impl AggregatedOrderbook {
             bids: BTreeMap::new(),
         }
     }
-
-    /// Initialize state from a (first) update.
-    fn from_exchange_orderbook(exchange: Exchange, orderbook: Orderbook) -> Self {
-        let (asks, bids) = orderbook.into_asks_bids();
-        Self {
-            asks: BTreeMap::from_iter(
-                asks.into_iter()
-                    .map(|(price, quantity)| ((price, exchange), quantity)),
-            ),
-            bids: BTreeMap::from_iter(
-                bids.into_iter()
-                    .map(|(price, quantity)| ((price, exchange), quantity)),
-            ),
-        }
-    }
-
-    /// As the client updates are snapshots and not deltas, flush all existing orders for the exchange
-    /// and then insert the latest orders.
-    fn apply_updates(&mut self, exchange: Exchange, latest_orderbook: Orderbook) {
+    
+    /// Update from a snapshot, flushing old orders for this exchange first.
+    fn update_from_snapshot(&mut self, exchange: Exchange, snapshot: OrderbookSnapshot) {
         self.flush_exchange_orders(exchange);
-        let (asks, bids) = latest_orderbook.into_asks_bids();
-        for (price, quantity) in asks {
-            self.asks.insert((price, exchange), quantity);
+        for ask in snapshot.asks {
+            self.asks.insert((ask.0, exchange), ask.1);
         }
-        for (price, quantity) in bids {
-            self.bids.insert((price, exchange), quantity);
+        for bid in snapshot.bids {
+            self.bids.insert((bid.0, exchange), bid.1);
         }
     }
 
-    /// Flush all orders from the aggregated orderbook for given exchange. The is required on every
-    /// snapshot from a client as well as when a client becomes disconnected from it's websocket.
+    /// Update from a delta message.
+    fn update_from_delta(
+        &mut self,
+        exchange: Exchange,
+        ask_updates: Vec<(Decimal, Decimal)>,
+        bid_updates: Vec<(Decimal, Decimal)>,
+    ) {
+        for ask in ask_updates {
+            if ask.1 == dec!(0) {
+                self.asks.remove(&(ask.0, exchange));
+            } else {
+                self.asks.insert((ask.0, exchange), ask.1);
+            }
+        }
+        for bid in bid_updates {
+            if bid.1 == dec!(0) {
+                self.bids.remove(&(bid.0, exchange));
+            } else {
+                self.bids.insert((bid.0, exchange), bid.1);
+            }
+        }
+    }
+
+    /// Flush all orders for given exchange. The is necessary on snapshot as well as on disconnect.
     fn flush_exchange_orders(&mut self, exchange: Exchange) {
         self.asks = BTreeMap::from_iter(
             self.asks
@@ -167,17 +149,12 @@ impl Aggregator {
         depth: usize,
         ws_client_rx: mpsc::Receiver<OrderbookUpdateMessage>,
         grpc_tx: broadcast::Sender<Summary>,
-        client1: Exchange,
-        client2: Exchange,
     ) -> Self {
         Self {
             depth,
-            aggregated_orderbook: None,
+            aggregated_orderbook: AggregatedOrderbook::default(),
             ws_client_rx,
             grpc_tx,
-            client1,
-            client2,
-            connection_status: ConnectionStatus::default(),
         }
     }
 
@@ -185,62 +162,42 @@ impl Aggregator {
         while let Some(m) = self.ws_client_rx.recv().await {
             match m {
                 Disconnect { exchange } => {
-                    if let Some(ob) = self.aggregated_orderbook.as_mut() {
-                        ob.flush_exchange_orders(exchange);
-                    }
-                    if exchange == self.client1 {
-                        self.connection_status.client1 = false;
-                    } else if exchange == self.client2 {
-                        self.connection_status.client2 = false;
-                    }
+                    self.aggregated_orderbook.flush_exchange_orders(exchange)
                 }
-
-                OrderbookUpdate {
+                Snapshot {
                     exchange,
                     orderbook,
+                } => self
+                    .aggregated_orderbook
+                    .update_from_snapshot(exchange, orderbook),
+                Delta {
+                    exchange,
+                    ask_updates,
+                    bid_updates,
                 } => {
-                    if exchange == self.client1 {
-                        self.connection_status.client1 = true;
-                    } else {
-                        self.connection_status.client2 = true;
-                    }
-                    self.apply_updates(exchange, orderbook);
-                    if self.connection_status.client1 && self.connection_status.client2 {
-                        match self.grpc_tx.send(
-                            self.aggregated_orderbook
-                                .as_ref()
-                                .unwrap()
-                                .to_summary(self.depth),
-                        ) {
-                            Ok(_) => (),  // logging: 'sent summary to grpc'
-                            Err(_) => (), // logging: 'no summary sent - no grpc clients'
-                        };
-                    }
+                    self.aggregated_orderbook
+                        .update_from_delta(exchange, ask_updates, bid_updates)
                 }
             }
+            // send a new summary on any update, including exchange client disconnection
+            self.send_summary();
         }
-        Err(anyhow!("aggregator terminated unexpectedly"))
+        bail!("aggregator terminated unexpectedly");
+    }
+
+    /// Send Summary to gRPC server.
+    fn send_summary(&self) {
+        let summary = self.aggregated_orderbook.to_summary(self.depth);
+        match self.grpc_tx.send(summary) {
+            Ok(_) => (),  // logging: 'sent summary to grpc'
+            Err(_) => (), // logging: 'no summary sent - no grpc clients'
+        }
     }
 
     /// Send an empty Summary message to clients for testing.
     pub fn send_test(&self) -> anyhow::Result<()> {
         self.grpc_tx.send(Summary::default())?;
         Ok(())
-    }
-
-    /// Apply updates to the aggreagted orderbook using the latest snapshot from the exchange.
-    fn apply_updates(&mut self, exchange: Exchange, latest_orderbook: Orderbook) {
-        match self.aggregated_orderbook {
-            Some(ref mut o) => {
-                o.apply_updates(exchange, latest_orderbook);
-            }
-            None => {
-                self.aggregated_orderbook = Some(AggregatedOrderbook::from_exchange_orderbook(
-                    exchange,
-                    latest_orderbook,
-                ));
-            }
-        }
     }
 }
 
