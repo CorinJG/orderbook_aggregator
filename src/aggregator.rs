@@ -12,7 +12,6 @@ use rust_decimal::{prelude::*, Decimal};
 use rust_decimal_macros::dec;
 use tokio::sync::{broadcast, mpsc};
 
-
 use crate::{
     config::Exchange,
     messages::{
@@ -34,7 +33,7 @@ pub struct Aggregator {
 }
 
 /// Aggregated orderbook mapping (price, exchange) to quantity.
-#[derive(Default)]
+#[derive(Default, Eq, PartialEq)]
 struct AggregatedOrderbook {
     asks: BTreeMap<(Decimal, Exchange), Decimal>,
     bids: BTreeMap<(Decimal, Exchange), Decimal>,
@@ -62,7 +61,7 @@ impl AggregatedOrderbook {
             bids: BTreeMap::new(),
         }
     }
-    
+
     /// Update from a snapshot, flushing old orders for this exchange first.
     fn update_from_snapshot(&mut self, exchange: Exchange, snapshot: OrderbookSnapshot) {
         self.flush_exchange_orders(exchange);
@@ -203,38 +202,33 @@ impl Aggregator {
 
 #[cfg(test)]
 mod tests {
-    use rust_decimal_macros::dec;
     use super::*;
+    use rust_decimal_macros::dec;
     use Exchange::*;
 
     #[test]
     fn aggregation() {
-        let orderbook1 = Orderbook::from_asks_bids(
-            vec![
-                (dec!(4), dec!(1)),
-                (dec!(5), dec!(1)),
-                (dec!(6), dec!(1)),
-            ],
-            vec![
-                (dec!(3), dec!(1)),
-                (dec!(2), dec!(1)),
-                (dec!(1), dec!(1)),
-            ],
+        let mut a = AggregatedOrderbook::new();
+        a.asks.insert((dec!(11), Binance), dec!(2));
+        a.asks.insert((dec!(12), Binance), dec!(2));
+        a.asks.insert((dec!(13), Binance), dec!(2));
+        a.bids.insert((dec!(10), Binance), dec!(2));
+        a.bids.insert((dec!(9), Binance), dec!(2));
+        a.bids.insert((dec!(8), Binance), dec!(2));
+        a.update_from_snapshot(
+            Binance,
+            OrderbookSnapshot {
+                asks: vec![(dec!(4), dec!(1)), (dec!(5), dec!(1)), (dec!(6), dec!(1))],
+                bids: vec![(dec!(3), dec!(1)), (dec!(2), dec!(1)), (dec!(1), dec!(1))],
+            },
         );
-        let orderbook2 = Orderbook::from_asks_bids(
-            vec![
-                (dec!(4), dec!(1)),
-                (dec!(5), dec!(1)),
-                (dec!(7), dec!(1)),
-            ],
-            vec![
-                (dec!(3), dec!(1)),
-                (dec!(2), dec!(1)),
-                (dec!(1), dec!(1)),
-            ],
+        a.update_from_snapshot(
+            Bitstamp,
+            OrderbookSnapshot {
+                asks: vec![(dec!(4), dec!(1)), (dec!(5), dec!(1)), (dec!(7), dec!(1))],
+                bids: vec![(dec!(3), dec!(1)), (dec!(2), dec!(1)), (dec!(1), dec!(1))],
+            },
         );
-        let mut a = AggregatedOrderbook::from_exchange_orderbook(Binance, orderbook1);
-        a.apply_updates(Bitstamp, orderbook2);
         let mut target = AggregatedOrderbook::new();
         target.asks.insert((dec!(4), Binance), dec!(1));
         target.asks.insert((dec!(5), Binance), dec!(1));
@@ -249,46 +243,67 @@ mod tests {
         target.bids.insert((dec!(2), Bitstamp), dec!(1));
         target.bids.insert((dec!(1), Bitstamp), dec!(1));
         assert_eq!(a, target);
-        
-        let orderbook3 = Orderbook::from_asks_bids(
+
+        a.update_from_delta(
+            Binance,
             vec![
-                (dec!(4.5), dec!(2)),
+                (dec!(4.0), dec!(2)),
                 (dec!(5.5), dec!(2)),
-                (dec!(6.5), dec!(2)),
+                (dec!(8.5), dec!(2)),
             ],
             vec![
                 (dec!(2.5), dec!(2)),
-                (dec!(3.5), dec!(2)),
+                (dec!(3.0), dec!(2)),
                 (dec!(3.75), dec!(2)),
             ],
         );
-        a.apply_updates(Bitstamp, orderbook3);
+        a.update_from_delta(
+            Bitstamp,
+            vec![
+                (dec!(4.0), dec!(2)),
+                (dec!(7.0), dec!(2)),
+                (dec!(8.5), dec!(2)),
+            ],
+            vec![
+                (dec!(2.5), dec!(2)),
+                (dec!(3.0), dec!(2)),
+                (dec!(3.75), dec!(2)),
+                (dec!(1), dec!(0)),
+            ],
+        );
         let mut target = AggregatedOrderbook::new();
-        target.asks.insert((dec!(4), Binance), dec!(1));
+        target.asks.insert((dec!(4), Binance), dec!(2));
         target.asks.insert((dec!(5), Binance), dec!(1));
+        target.asks.insert((dec!(5.5), Binance), dec!(2));
         target.asks.insert((dec!(6), Binance), dec!(1));
-        target.asks.insert((dec!(4.5), Bitstamp), dec!(2));
-        target.asks.insert((dec!(5.5), Bitstamp), dec!(2));
-        target.asks.insert((dec!(6.5), Bitstamp), dec!(2));
-        target.bids.insert((dec!(1), Binance), dec!(1));
+        target.asks.insert((dec!(8.5), Binance), dec!(2));
+        target.asks.insert((dec!(4), Bitstamp), dec!(2));
+        target.asks.insert((dec!(5), Bitstamp), dec!(1));
+        target.asks.insert((dec!(7), Bitstamp), dec!(2));
+        target.asks.insert((dec!(8.5), Bitstamp), dec!(2));
+
+        target.bids.insert((dec!(3.75), Binance), dec!(2));
+        target.bids.insert((dec!(3), Binance), dec!(2));
+        target.bids.insert((dec!(2.5), Binance), dec!(2));
         target.bids.insert((dec!(2), Binance), dec!(1));
-        target.bids.insert((dec!(3), Binance), dec!(1));
-        target.bids.insert((dec!(2.5), Bitstamp), dec!(2));
-        target.bids.insert((dec!(3.5), Bitstamp), dec!(2));
+        target.bids.insert((dec!(1), Binance), dec!(1));
         target.bids.insert((dec!(3.75), Bitstamp), dec!(2));
+        target.bids.insert((dec!(3), Bitstamp), dec!(2));
+        target.bids.insert((dec!(2.5), Bitstamp), dec!(2));
+        target.bids.insert((dec!(2), Bitstamp), dec!(1));
         assert_eq!(a, target);
-        
+
         let summary = Summary {
             spread: 0.25f64,
-            asks: vec!(
+            asks: vec![
                 Level {
                     exchange: "binance".into(),
                     price: 4f64,
-                    amount: 1f64,
+                    amount: 2f64,
                 },
                 Level {
                     exchange: "bitstamp".into(),
-                    price: 4.5f64,
+                    price: 4f64,
                     amount: 2f64,
                 },
                 Level {
@@ -298,32 +313,32 @@ mod tests {
                 },
                 Level {
                     exchange: "bitstamp".into(),
-                    price: 5.5f64,
-                    amount: 2f64,
+                    price: 5f64,
+                    amount: 1f64,
                 },
-            ),
-            bids: vec!(
+            ],
+            bids: vec![
                 Level {
                     exchange: "bitstamp".into(),
                     price: 3.75f64,
                     amount: 2f64,
                 },
                 Level {
+                    exchange: "binance".into(),
+                    price: 3.75f64,
+                    amount: 2f64,
+                },
+                Level {
                     exchange: "bitstamp".into(),
-                    price: 3.5f64,
+                    price: 3f64,
                     amount: 2f64,
                 },
                 Level {
                     exchange: "binance".into(),
                     price: 3f64,
-                    amount: 1f64,
-                },
-                Level {
-                    exchange: "bitstamp".into(),
-                    price: 2.5f64,
                     amount: 2f64,
                 },
-            ),
+            ],
         };
         assert_eq!(a.to_summary(4), summary);
     }
