@@ -12,7 +12,7 @@ use std::fmt::Formatter;
 
 use anyhow::anyhow;
 use rust_decimal::{prelude::*, Decimal};
-use tokio::sync::{broadcast::Sender, mpsc};
+use tokio::sync::{broadcast, mpsc};
 
 use crate::{
     config::Exchange,
@@ -45,7 +45,7 @@ pub struct Aggregator {
     // receive updates from websocket clients
     ws_client_rx: mpsc::Receiver<OrderbookUpdateMessage>,
     // send updates to the gRPC server
-    grpc_tx: Sender<Summary>,
+    grpc_tx: broadcast::Sender<Summary>,
     connection_status: ConnectionStatus,
 }
 
@@ -57,6 +57,7 @@ struct ConnectionStatus {
 }
 
 /// Aggregated orderbook mapping (price, exchange) to quantity.
+#[derive(Eq, PartialEq)]
 struct AggregatedOrderbook {
     asks: BTreeMap<(Decimal, Exchange), Decimal>,
     bids: BTreeMap<(Decimal, Exchange), Decimal>,
@@ -78,6 +79,13 @@ impl std::fmt::Debug for AggregatedOrderbook {
 }
 
 impl AggregatedOrderbook {
+    fn new() -> Self {
+        Self {
+            asks: BTreeMap::new(),
+            bids: BTreeMap::new(),
+        }
+    }
+
     /// Initialize state from a (first) update.
     fn from_exchange_orderbook(exchange: Exchange, orderbook: Orderbook) -> Self {
         let (asks, bids) = orderbook.into_asks_bids();
@@ -158,7 +166,7 @@ impl Aggregator {
     pub fn new(
         depth: usize,
         ws_client_rx: mpsc::Receiver<OrderbookUpdateMessage>,
-        grpc_tx: Sender<Summary>,
+        grpc_tx: broadcast::Sender<Summary>,
         client1: Exchange,
         client2: Exchange,
     ) -> Self {
@@ -233,5 +241,133 @@ impl Aggregator {
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal_macros::dec;
+    use super::*;
+    use Exchange::*;
+
+    #[test]
+    fn aggregation() {
+        let orderbook1 = Orderbook::from_asks_bids(
+            vec![
+                (dec!(4), dec!(1)),
+                (dec!(5), dec!(1)),
+                (dec!(6), dec!(1)),
+            ],
+            vec![
+                (dec!(3), dec!(1)),
+                (dec!(2), dec!(1)),
+                (dec!(1), dec!(1)),
+            ],
+        );
+        let orderbook2 = Orderbook::from_asks_bids(
+            vec![
+                (dec!(4), dec!(1)),
+                (dec!(5), dec!(1)),
+                (dec!(7), dec!(1)),
+            ],
+            vec![
+                (dec!(3), dec!(1)),
+                (dec!(2), dec!(1)),
+                (dec!(1), dec!(1)),
+            ],
+        );
+        let mut a = AggregatedOrderbook::from_exchange_orderbook(Binance, orderbook1);
+        a.apply_updates(Bitstamp, orderbook2);
+        let mut target = AggregatedOrderbook::new();
+        target.asks.insert((dec!(4), Binance), dec!(1));
+        target.asks.insert((dec!(5), Binance), dec!(1));
+        target.asks.insert((dec!(6), Binance), dec!(1));
+        target.asks.insert((dec!(4), Bitstamp), dec!(1));
+        target.asks.insert((dec!(5), Bitstamp), dec!(1));
+        target.asks.insert((dec!(7), Bitstamp), dec!(1));
+        target.bids.insert((dec!(1), Binance), dec!(1));
+        target.bids.insert((dec!(2), Binance), dec!(1));
+        target.bids.insert((dec!(3), Binance), dec!(1));
+        target.bids.insert((dec!(3), Bitstamp), dec!(1));
+        target.bids.insert((dec!(2), Bitstamp), dec!(1));
+        target.bids.insert((dec!(1), Bitstamp), dec!(1));
+        assert_eq!(a, target);
+        
+        let orderbook3 = Orderbook::from_asks_bids(
+            vec![
+                (dec!(4.5), dec!(2)),
+                (dec!(5.5), dec!(2)),
+                (dec!(6.5), dec!(2)),
+            ],
+            vec![
+                (dec!(2.5), dec!(2)),
+                (dec!(3.5), dec!(2)),
+                (dec!(3.75), dec!(2)),
+            ],
+        );
+        a.apply_updates(Bitstamp, orderbook3);
+        let mut target = AggregatedOrderbook::new();
+        target.asks.insert((dec!(4), Binance), dec!(1));
+        target.asks.insert((dec!(5), Binance), dec!(1));
+        target.asks.insert((dec!(6), Binance), dec!(1));
+        target.asks.insert((dec!(4.5), Bitstamp), dec!(2));
+        target.asks.insert((dec!(5.5), Bitstamp), dec!(2));
+        target.asks.insert((dec!(6.5), Bitstamp), dec!(2));
+        target.bids.insert((dec!(1), Binance), dec!(1));
+        target.bids.insert((dec!(2), Binance), dec!(1));
+        target.bids.insert((dec!(3), Binance), dec!(1));
+        target.bids.insert((dec!(2.5), Bitstamp), dec!(2));
+        target.bids.insert((dec!(3.5), Bitstamp), dec!(2));
+        target.bids.insert((dec!(3.75), Bitstamp), dec!(2));
+        assert_eq!(a, target);
+        
+        let summary = Summary {
+            spread: 0.25f64,
+            asks: vec!(
+                Level {
+                    exchange: "binance".into(),
+                    price: 4f64,
+                    amount: 1f64,
+                },
+                Level {
+                    exchange: "bitstamp".into(),
+                    price: 4.5f64,
+                    amount: 2f64,
+                },
+                Level {
+                    exchange: "binance".into(),
+                    price: 5f64,
+                    amount: 1f64,
+                },
+                Level {
+                    exchange: "bitstamp".into(),
+                    price: 5.5f64,
+                    amount: 2f64,
+                },
+            ),
+            bids: vec!(
+                Level {
+                    exchange: "bitstamp".into(),
+                    price: 3.75f64,
+                    amount: 2f64,
+                },
+                Level {
+                    exchange: "bitstamp".into(),
+                    price: 3.5f64,
+                    amount: 2f64,
+                },
+                Level {
+                    exchange: "binance".into(),
+                    price: 3f64,
+                    amount: 1f64,
+                },
+                Level {
+                    exchange: "bitstamp".into(),
+                    price: 2.5f64,
+                    amount: 2f64,
+                },
+            ),
+        };
+        assert_eq!(a.to_summary(4), summary);
     }
 }
