@@ -158,6 +158,7 @@ impl Aggregator {
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        println!("aggregator running");
         while let Some(m) = self.ws_client_rx.recv().await {
             match m {
                 Disconnect { exchange } => {

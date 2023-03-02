@@ -4,7 +4,6 @@
 //! push all order book delta messages.
 
 use std::pin::Pin;
-use std::time::Duration;
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
@@ -54,19 +53,16 @@ fn construct_subscription_message(symbol: &str) -> String {
 pub struct BitstampOrderbookWebsocketClient {
     symbol: String,
     downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
-    ws_buffer_time_ms: u64,
 }
 
 impl BitstampOrderbookWebsocketClient {
     pub fn new(
         currency_pair: CurrencyPair,
         downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
-        ws_buffer_time_ms: u64,
     ) -> Self {
         Self {
             symbol: [currency_pair.base(), currency_pair.quote()].join(""),
             downstream_tx,
-            ws_buffer_time_ms,
         }
     }
 }
@@ -88,7 +84,7 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
     }
 
     async fn buffer_messages(&self) {
-        tokio::time::sleep(Duration::from_millis(self.ws_buffer_time_ms)).await;
+        // no need to buffer using the order book channel
     }
 
     // we don't use a rest request since we use the top-100 channel and not the delta channel

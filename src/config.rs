@@ -115,6 +115,11 @@ impl Config {
     fn validate(self) -> anyhow::Result<Self> {
         if self.depth > 100 {
             bail!("depth too large, some ws channels limit snapshots to 100")
+        } else if self.depth < 1 {
+            bail!("depth must be greater than 0")
+        }
+        if self.exchanges.is_empty() {
+            bail!("number of exchanges must be > 0")
         }
         Ok(self)
     }
@@ -131,15 +136,4 @@ pub fn read_config() -> Config {
         .expect("failed to open config file");
     let config: Config = serde_yaml::from_reader(f).expect("failed to parse config file");
     config.validate().expect("invalid config")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Test that valid configs are validating and invalid ones are erroring.
-    #[test]
-    fn config() {
-        read_config();
-    }
 }

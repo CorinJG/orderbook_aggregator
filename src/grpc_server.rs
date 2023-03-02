@@ -58,5 +58,6 @@ pub async fn run_grpc_server(
     addr: SocketAddr,
 ) -> Result<(), tonic::transport::Error> {
     let service = OrderbookAggregatorServer::new(grpc_aggregator_service);
+    println!("grpc server running");
     Server::builder().add_service(service).serve(addr).await
 }

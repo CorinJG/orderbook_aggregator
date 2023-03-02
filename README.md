@@ -8,7 +8,7 @@ However, some exchange websocket APIs have issues on certain channels making the
 
 ## Design
 
-<kbd><img src="https://i.ibb.co/zSTg3fc/mermaid-diagram-2023-03-02-023950.png" alt="drawing" width="450" height="250"  style="border:1px solid black;"/></kbd>  &nbsp; 
+<kbd><img src="https://i.ibb.co/zSTg3fc/mermaid-diagram-2023-03-02-023950.png" alt="drawing" width="460" height="270"  style="border:1px solid black;"/></kbd>  &nbsp; 
 
 The aggregator, gRPC server and each websocket client are Tokio tasks, which communicate using Tokio channels. The message flow is one-directional.
 

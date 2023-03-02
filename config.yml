@@ -2,6 +2,6 @@ addr: 0.0.0.0:50051
 currency_pair: eth_btc
 depth: 10
 exchanges:
-  - binance
   - bitstamp
+  - binance
 ws_buffer_time_ms: 4000

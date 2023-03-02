@@ -48,7 +48,6 @@ async fn main() {
                 let ws_client = websocket::bitstamp::BitstampOrderbookWebsocketClient::new(
                     config.currency_pair.clone(),
                     ws_client_tx.clone(),
-                    config.ws_buffer_time_ms,
                 );
                 ws_clients.push(tokio::spawn(
                     async move { ws_client.manage_connection().await },

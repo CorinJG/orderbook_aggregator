@@ -96,8 +96,8 @@ pub trait OrderbookWebsocketClient {
             if let Err(e) = self.synchronize(read.as_mut(), initial_snapshot).await {
                 eprintln!("{e}");
                 if e.downcast_ref::<WebsocketClientError>().is_some() {
-                    // attempt reconnection after a short delay
                     tokio::time::sleep(Duration::from_millis(1_000)).await;
+                    println!("attempting reconnection");
                     continue;
                 } else {
                     bail!(e)
@@ -109,8 +109,8 @@ pub trait OrderbookWebsocketClient {
                 Err(e) => {
                     eprintln!("{e}");
                     if e.downcast_ref::<WebsocketClientError>().is_some() {
-                        // attempt reconnection after a short delay
                         tokio::time::sleep(Duration::from_millis(1_000)).await;
+                        println!("attempting reconnection");
                         continue;
                     } else {
                         bail!(e)
