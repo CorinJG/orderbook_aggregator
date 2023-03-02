@@ -11,7 +11,7 @@ async fn main() {
     // channel for Aggregator to forward updates to the gRPC server
     let (grpc_tx, _) = tokio::sync::broadcast::channel::<Summary>(4);
     // channel for websocket clients to send updates to the aggregator
-    let (ws_client_tx, ws_client_rx) = tokio::sync::mpsc::channel(8);
+    let (ws_client_tx, ws_client_rx) = tokio::sync::mpsc::channel(32);
     let mut aggregator = Aggregator::new(config.depth, ws_client_rx, grpc_tx.clone());
     let grpc_server = grpc_server::OrderbookAggregatorService::new(grpc_tx);
 

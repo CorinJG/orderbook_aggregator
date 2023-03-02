@@ -60,8 +60,7 @@ pub trait OrderbookWebsocketClient {
     /// Sleep for a short time without reading the websocket to allow the messages to buffer.
     async fn buffer_messages(&self);
 
-    /// Get the initial orderbook snapshot via a rest request. If the initial snapshot is sent as a first
-    /// message in the websocket channel, this is a no-op.
+    /// Get an orderbook snapshot via a rest request, if required for synchronizing with a ws channel.
     async fn request_snapshot(&self) -> anyhow::Result<Option<Self::RawOrderbookSnapshot>>;
 
     /// For websocket clients which must reconcile an initial rest snapshot with buffered websocket messages.

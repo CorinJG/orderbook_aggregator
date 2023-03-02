@@ -4,9 +4,11 @@ A gRPC server streaming a summary of an aggregated orderbook for a given currenc
 
 Where possible, diff/delta websocket channels are preferable to channels which push periodic full orderbook snapshots as it significantly reduces network and server loads, enabling downstream consumers to react quicker to market events. 
 
+However, I believe some exchange websocket APIs have issues on certain channels making the Delta channel unfeasable.
+
 ## Design
 
-<kbd><img src="https://github.com/CorinJG/orderbook_aggregator/blob/master/mermaid.png" alt="drawing" width="500" height="200"  style="border:1px solid black;"/></kbd>  &nbsp; 
+<kbd><img src="https://mermaid.ink/img/pako:eNqNj0Frg0AQhf_KMCcDZlGj3WYPhdDSUw8lHgLFy0ZHE-K6YV3bWvW_dxsLIdBD5zTz5n2PmQFzXRAKLGv9kR-ksfCyzRpwtQu9He1bnZ_IhgtYLh9GbQoysNf6BN25kJbaETbepqoMVdJqs_gloysZXUj4N9p4wBiDmfrDcCPN0WmnlDT9CM9etX19hJTMO81-9FGRUfJYuBeHHyVDeyBFGQrXFlTKrrYZZs3krLKzOu2bHIU1Hfk4H_p0lJWRCkUp69apZ9m8aX0zoxjwE8WaxQFfxQnnIb9fJ4mPPYooWrEwCKIgju84d-t48vHrEhBO3_XWdzo?type=png" alt="drawing" width="500" height="200"  style="border:1px solid black;"/></kbd>  &nbsp; 
 
 Components communicate using Tokio channels.
 
