@@ -1,16 +1,22 @@
 # Orderbook Aggregator
 
-A gRPC server streaming a summary of an aggregated orderbook for a given currency pair (truncated to top-*n* levels) and the aggregated spread. Streams a message upon update. 
+A gRPC server which connects to N exchange websockets for a configurable currency pair and streams an order book summary consisting of an aggregated top-*n* levels and the aggregated spread. 
 
-Where possible, diff/delta websocket channels are preferable to channels which push periodic full orderbook snapshots as it significantly reduces network and server loads, enabling downstream consumers to react quicker to market events. 
+Where possible, diff/delta websocket channels are preferable to channels which push periodic full orderbook snapshots as it reduces network and processing loads, enabling downstream consumers to react quicker to market events. 
 
-However, I believe some exchange websocket APIs have issues on certain channels making the Delta channel unfeasable.
+However, some exchange websocket APIs have issues on certain channels making the Delta channel unfeasable.
 
 ## Design
 
-<kbd><img src="https://mermaid.ink/img/pako:eNqNj0Frg0AQhf_KMCcDZlGj3WYPhdDSUw8lHgLFy0ZHE-K6YV3bWvW_dxsLIdBD5zTz5n2PmQFzXRAKLGv9kR-ksfCyzRpwtQu9He1bnZ_IhgtYLh9GbQoysNf6BN25kJbaETbepqoMVdJqs_gloysZXUj4N9p4wBiDmfrDcCPN0WmnlDT9CM9etX19hJTMO81-9FGRUfJYuBeHHyVDeyBFGQrXFlTKrrYZZs3krLKzOu2bHIU1Hfk4H_p0lJWRCkUp69apZ9m8aX0zoxjwE8WaxQFfxQnnIb9fJ4mPPYooWrEwCKIgju84d-t48vHrEhBO3_XWdzo?type=png" alt="drawing" width="500" height="200"  style="border:1px solid black;"/></kbd>  &nbsp; 
+<kbd><img src="https://i.ibb.co/zSTg3fc/mermaid-diagram-2023-03-02-023950.png" alt="drawing" width="450" height="250"  style="border:1px solid black;"/></kbd>  &nbsp; 
 
-Components communicate using Tokio channels.
+The aggregator, gRPC server and each websocket client are Tokio tasks, which communicate using Tokio channels. The message flow is one-directional.
+
+## Features 
+
+- Generic over symbol, number of exchanges aggregated over and the depth.
+- Automatic reconnection attempts (stale data dropped when a websocket client loses connection)
+- `OrderbookWebsocketClient` trait provided, facilitating rapid new exchange implementation by extending a minimal set of async fns.
 
  ## Run
 
@@ -25,11 +31,17 @@ Service can be configured in `config.yml`.
 ```bash
 grpcurl -plaintext -import-path ./proto -proto orderbook.proto  '[::]:50051' orderbook.OrderbookAggregator/BookSummary
 ```
-## Extensions
+## Extension
 
-Possible scopes for extension include:
-- **generalizing to n exchanges**
-- **truncate by volume**: as the top orders may be for insignificant quantities, truncating on cumulative order quantity instead may be another useful trader signal.
-- **performance**: we deserialize websocket message price and quantity fields into `rust_decimal::Decimal`, to support precise floating point arithmetic. It may be worth profiling alternatives if performance is a primary consideration; certain websocket event message validation could be omitted if trading in conditions of extreme sensitivity to latency - websocket events can be assumed to fail validation very rarely, so it may be a calculated risk in some contexts. In particular we can skip deserializing certain fields; whilst a `BTreeMap` is a good candidate for our local version of the orderbook, the std lib implementation uses sensible defaults but it's notable that in our use case the vast majority of inserts and removes will be close to one end (near the spread); 
+Possible scopes for extension may include:
+- **truncate by volume**: as the top orders may be for insignificant quantities, truncating on cumulative order quantity may be another useful trader signal;
+- **performance**: 
+    - the `BTreeMap` used in the aggregator to maintain state of a combined orderbook uses the std lib defaults, but it's possible an alternative implementation could be optimal for our use case; 
+    - we deserialize websocket message price and quantity fields into `rust_decimal::Decimal`, to support precise floating point arithmetic. It may be worth profiling alternatives if performance is a primary consideration; 
+    - certain websocket event message validation could be omitted if trading in conditions of extreme sensitivity to latency - websocket events can be assumed to fail validation very rarely, so it may be a calculated risk in some contexts. In particular we can skip deserializing certain fields; 
+    - profiling of the number of threads in the runtime with different numbers of exchanges.
 - **security**: Upgrading gRPC to serve the stream over TLS would eliminate the risk of nefarious actors corrupting the datastream.  
 - **logging and instrumentation**: if this were a real production service logging and instrumentation would be essential.
+
+## Unimplemented
+- exchange symbol validation via restful endpoints, e.g. https://www.bitstamp.net/api/v2/trading-pairs-info/

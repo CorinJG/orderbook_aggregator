@@ -26,24 +26,6 @@ use super::{
 const EXCHANGE: Exchange = Exchange::Bitstamp;
 const WS_BASE_URL: &str = "wss://ws.bitstamp.net";
 
-// /// Target deserialization type for bitstamp rest order book snapshot.
-// #[derive(Debug, Deserialize)]
-// pub struct RawOrderbookSnapshot {
-//     #[serde(deserialize_with = "deserialize_using_parse")]
-//     microtimestamp: u64,
-//     asks: Vec<(Decimal, Decimal)>,
-//     bids: Vec<(Decimal, Decimal)>,
-// }
-
-// impl From<RawOrderbookSnapshot> for OrderbookSnapshot {
-//     fn from(value: RawOrderbookSnapshot) -> Self {
-//         Self {
-//             asks: value.asks,
-//             bids: value.bids,
-//         }
-//     }
-// }
-
 /// The format of an "order book" websocket message received by our client.
 #[derive(Debug, Deserialize)]
 struct WsMessage {

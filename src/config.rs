@@ -113,7 +113,9 @@ impl Default for Config {
 impl Config {
     /// Validate the configuration.
     fn validate(self) -> anyhow::Result<Self> {
-        // todo
+        if self.depth > 100 {
+            bail!("depth too large, some ws channels limit snapshots to 100")
+        }
         Ok(self)
     }
 }
