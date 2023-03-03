@@ -5,7 +5,7 @@
 
 use std::pin::Pin;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::{SinkExt, Stream, StreamExt};
 use rust_decimal::Decimal;
@@ -19,7 +19,9 @@ use crate::messages::OrderbookUpdateMessage::{self, *};
 use crate::utils::deserialize_using_parse;
 
 use super::{
-    OrderbookWebsocketClient, WebsocketClientError::*, WebsocketConnectionResult, WsWriter,
+    OrderbookWebsocketClient,
+    WebsocketClientError::{self, *},
+    WebsocketConnectionResult, WsWriter,
 };
 
 const EXCHANGE: Exchange = Exchange::Bitstamp;
@@ -69,8 +71,6 @@ impl BitstampOrderbookWebsocketClient {
 
 #[async_trait]
 impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
-    type RawOrderbookSnapshot = ();
-
     async fn connect(&self) -> WebsocketConnectionResult {
         let connect_addr = WS_BASE_URL;
         tokio_tungstenite::connect_async(connect_addr).await
@@ -83,35 +83,29 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
             .await?)
     }
 
-    async fn buffer_messages(&self) {
-        // no need to buffer using the order book channel
-    }
-
-    // we don't use a rest request since we use the top-100 channel and not the delta channel
-    async fn request_snapshot(&self) -> anyhow::Result<Option<()>> {
-        Ok(None)
-    }
-
-    /// Retrieve websocket messages until we can synchronize with the snapshot.
-    /// Then forward the snapshot and the first pertinent delta event downstream and return.
+    /// We use the order book stream here so no sync necessary
     async fn synchronize(
         &self,
         _read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
-        _initial_snapshot: Option<Self::RawOrderbookSnapshot>,
-    ) -> anyhow::Result<()> {
-        return Ok(());
+    ) -> Result<(), WebsocketClientError> {
+        Ok(())
     }
 
     /// Process the websocket events, validating them and forwarding downstream.
     async fn process_messages(
         &self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), WebsocketClientError> {
         println!("bitstamp ws client connected");
         let expected_channel = format!("order_book_{}", self.symbol);
         // check that bitstamp are sending monotonic timestamps
         let mut prev_timestamp = None;
-        while let Some(message) = read.next().await.transpose()? {
+        while let Some(message) = read
+            .next()
+            .await
+            .transpose()
+            .context("tungstenite error during bitstamp message processing")?
+        {
             if message.is_ping() || message.is_pong() {
                 continue;
             }
@@ -119,15 +113,22 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
                 event,
                 data,
                 channel,
-            } = serde_json::from_slice(&message.into_data())?;
+            } = serde_json::from_slice(&message.into_data())
+                .context("serde_json error during bitstamp message processing")?;
             match event.as_ref() {
                 "data" => {
                     if channel != expected_channel {
-                        bail!("unexpected channel: {channel}");
+                        return Err(InvariantViolation(
+                            EXCHANGE,
+                            format!("unexpected channel: {channel}"),
+                        ));
                     }
                     if let Some(prev_ts) = prev_timestamp {
                         if data.microtimestamp <= prev_ts {
-                            bail!("event timestamps out of sequence");
+                            return Err(InvariantViolation(
+                                EXCHANGE,
+                                "event timestamps out of sequence".into(),
+                            ));
                         }
                     }
                     prev_timestamp = Some(data.microtimestamp);
@@ -142,9 +143,14 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
                         .context("bitstamp error sending downstream")?;
                 }
                 "bts:subscription_succeeded" => (),
-                other => bail!("bitstamp unexpected event type: {other}"),
+                other => {
+                    return Err(InvariantViolation(
+                        EXCHANGE,
+                        format!("unexpected event type: {other}"),
+                    ))
+                }
             }
         }
-        bail!(DisconnectError(EXCHANGE))
+        return Err(Disconnect(EXCHANGE));
     }
 }

@@ -95,7 +95,6 @@ pub struct Config {
     pub currency_pair: CurrencyPair,
     pub depth: usize,
     pub exchanges: Vec<Exchange>,
-    pub ws_buffer_time_ms: u64,
 }
 
 impl Default for Config {
@@ -105,7 +104,6 @@ impl Default for Config {
             currency_pair: "eth_btc".parse().unwrap(),
             depth: 10,
             exchanges: vec![Binance, Bitstamp],
-            ws_buffer_time_ms: 3_000,
         }
     }
 }

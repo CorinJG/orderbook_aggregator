@@ -26,4 +26,7 @@ pub(crate) mod utils {
             .parse::<T>()
             .map_err(serde::de::Error::custom)
     }
+
+    pub(crate) type Seconds = u64;
+    pub(crate) type Millis = u64;
 }

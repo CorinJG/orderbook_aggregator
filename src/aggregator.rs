@@ -10,7 +10,7 @@ use std::fmt::Formatter;
 use anyhow::bail;
 use rust_decimal::{prelude::*, Decimal};
 use rust_decimal_macros::dec;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{mpsc, watch};
 
 use crate::{
     config::Exchange,
@@ -29,7 +29,7 @@ pub struct Aggregator {
     // receive updates from websocket clients
     ws_client_rx: mpsc::Receiver<OrderbookUpdateMessage>,
     // send updates to the gRPC server
-    grpc_tx: broadcast::Sender<Summary>,
+    grpc_tx: watch::Sender<Option<Summary>>,
 }
 
 /// Aggregated orderbook mapping (price, exchange) to quantity.
@@ -140,7 +140,7 @@ impl Aggregator {
     pub fn new(
         depth: usize,
         ws_client_rx: mpsc::Receiver<OrderbookUpdateMessage>,
-        grpc_tx: broadcast::Sender<Summary>,
+        grpc_tx: watch::Sender<Option<Summary>>,
     ) -> Self {
         Self {
             depth,
@@ -181,7 +181,7 @@ impl Aggregator {
     /// Send Summary to gRPC server.
     fn send_summary(&self) {
         let summary = self.aggregated_orderbook.to_summary(self.depth);
-        match self.grpc_tx.send(summary) {
+        match self.grpc_tx.send(Some(summary)) {
             Ok(_) => (),  // logging: 'sent summary to grpc'
             Err(_) => (), // logging: 'no summary sent - no grpc clients'
         }
@@ -189,7 +189,7 @@ impl Aggregator {
 
     /// Send an empty Summary message to clients for testing.
     pub fn send_test(&self) -> anyhow::Result<()> {
-        self.grpc_tx.send(Summary::default())?;
+        self.grpc_tx.send(Some(Summary::default()))?;
         Ok(())
     }
 }

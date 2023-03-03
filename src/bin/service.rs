@@ -5,7 +5,6 @@ use orderbook_aggregator::{
     aggregator::Aggregator,
     config::{self, Exchange::*},
     grpc_server,
-    proto::orderbook::Summary,
     websocket::{self, OrderbookWebsocketClient},
 };
 
@@ -21,14 +20,14 @@ async fn main() {
     let config = config::read_config();
 
     // channel for Aggregator to forward updates to the gRPC server
-    let (grpc_tx, _) = tokio::sync::broadcast::channel::<Summary>(4);
+    let (grpc_tx, grpc_rx) = tokio::sync::watch::channel(None);
 
     // channel for websocket clients to send updates to the aggregator
     let (ws_client_tx, ws_client_rx) = tokio::sync::mpsc::channel(32);
 
-    let mut aggregator = Aggregator::new(config.depth, ws_client_rx, grpc_tx.clone());
+    let mut aggregator = Aggregator::new(config.depth, ws_client_rx, grpc_tx);
 
-    let grpc_server = grpc_server::OrderbookAggregatorService::new(grpc_tx);
+    let grpc_server = grpc_server::OrderbookAggregatorService::new(grpc_rx);
 
     // use FuturesUnordered to run a number of websocket clients unknown until runtime
     let ws_clients = FuturesUnordered::new();
@@ -38,7 +37,6 @@ async fn main() {
                 let ws_client = websocket::binance::BinanceOrderbookWebsocketClient::new(
                     config.currency_pair.clone(),
                     ws_client_tx.clone(),
-                    config.ws_buffer_time_ms,
                 );
                 ws_clients.push(tokio::spawn(
                     async move { ws_client.manage_connection().await },

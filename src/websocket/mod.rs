@@ -18,22 +18,30 @@ use std::time::Duration;
 use anyhow::bail;
 use async_trait::async_trait;
 use futures_util::{stream::SplitSink, Stream, StreamExt};
-use serde::de::DeserializeOwned;
 use thiserror::Error;
-use tokio::{net::TcpStream, time::timeout};
+use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tungstenite::{error::Error, http, protocol::Message};
 
-use crate::config::Exchange;
+use crate::{config::Exchange, utils::Millis};
 
-// The two websocket client errors which warrant reconnection attempt.
+// how long to wait before attempting reconnection
+const RECONNECT_DELAY: Millis = 1_000;
+
 #[derive(Debug, Error)]
-enum WebsocketClientError {
+pub enum WebsocketClientError {
     #[error("{0:?} websocket client disconnected unexpectedly")]
-    DisconnectError(Exchange),
-    #[error("{0:?} synchronization error")]
-    SynchronizationError(Exchange),
+    Disconnect(Exchange),
+    #[error("{0:?} synchronziation failed")]
+    Synchronization(Exchange),
+    #[error("{0:?} synchronization expired")]
+    SynchronizationExpired(Exchange),
+    #[error("{0:?} assumed invariant of the websocket API has been violated: {1}")]
+    InvariantViolation(Exchange, String),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
+use WebsocketClientError::*;
 
 type WebsocketConnectionResult = Result<
     (
@@ -48,72 +56,68 @@ type WsWriter = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 /// Trait for orderbook websocket clients.
 #[async_trait]
 pub trait OrderbookWebsocketClient {
-    /// The deserialization target type for the rest snapshot;
-    type RawOrderbookSnapshot: DeserializeOwned + Send;
-
     /// Connect to the websocket.
     async fn connect(&self) -> WebsocketConnectionResult;
 
     /// Subscribe to websocket channel(s) by sending subscription messages (if any).
     async fn subscribe(&self, write: Pin<&mut WsWriter>) -> anyhow::Result<()>;
 
-    /// Sleep for a short time without reading the websocket to allow the messages to buffer.
-    async fn buffer_messages(&self);
-
-    /// Get an orderbook snapshot via a rest request, if required for synchronizing with a ws channel.
-    async fn request_snapshot(&self) -> anyhow::Result<Option<Self::RawOrderbookSnapshot>>;
-
-    /// For websocket clients which must reconcile an initial rest snapshot with buffered websocket messages.
+    /// For websocket clients which must reconcile an initial snapshot with buffered websocket messages to
+    /// attach to a delta stream.
+    /// Any pertinent websocket events taken from the read buffer during synchronization should be processed
+    /// (e.g. sent downstream).
     async fn synchronize(
         &self,
         read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
-        initial_snapshot: Option<Self::RawOrderbookSnapshot>,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), WebsocketClientError>;
 
     /// Long-running task to process all messages arriving on the websocket, including those buffered
     /// before obtaining an initial snapshot to sychronize with.
     async fn process_messages(
         &self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), WebsocketClientError>;
 
     /// Manage the websocket connection. If the synchronization fails or the client becomes disconnected,
     /// attempt reconnection after a short delay.
+    /// Periodically re-synchronize, depending on when the exchange client implementation chooses to return
+    /// processing messages early with SynchronizationExpired.
     async fn manage_connection(&self) -> anyhow::Result<()> {
-        loop {
+        'connect: loop {
             let (ws_stream, _response) = self.connect().await?;
             let (write, read) = ws_stream.split();
-            tokio::pin!(write);
+            tokio::pin!(write, read);
 
             self.subscribe(write.as_mut()).await?;
-            self.buffer_messages().await;
 
-            // wrap the rest request in a timer so we aren't buffering indefinitely
-            let initial_snapshot: Option<Self::RawOrderbookSnapshot> =
-                timeout(Duration::from_millis(3_000), self.request_snapshot()).await??;
-
-            tokio::pin!(read);
-            if let Err(e) = self.synchronize(read.as_mut(), initial_snapshot).await {
-                eprintln!("{e}");
-                if e.downcast_ref::<WebsocketClientError>().is_some() {
-                    tokio::time::sleep(Duration::from_millis(1_000)).await;
-                    println!("attempting reconnection");
-                    continue;
-                } else {
-                    bail!(e)
-                }
-            }
-
-            match self.process_messages(read.as_mut()).await {
-                Ok(_) => unreachable!("client process_messages loop should error on completion"),
-                Err(e) => {
+            'synchronize: loop {
+                if let Err(e) = self.synchronize(read.as_mut()).await {
                     eprintln!("{e}");
-                    if e.downcast_ref::<WebsocketClientError>().is_some() {
-                        tokio::time::sleep(Duration::from_millis(1_000)).await;
-                        println!("attempting reconnection");
-                        continue;
-                    } else {
-                        bail!(e)
+                    match e {
+                        Disconnect(exchange) | Synchronization(exchange) => {
+                            tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY)).await;
+                            println!("{exchange:?} attempting reconnection");
+                            continue 'connect;
+                        }
+                        other => bail!(other),
+                    }
+                }
+
+                match self.process_messages(read.as_mut()).await {
+                    Ok(_) => unreachable!("client process_messages should error on completion"),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        match e {
+                            Disconnect(exchange) => {
+                                tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY)).await;
+                                println!("{exchange:?} attempting reconnection");
+                                continue 'connect;
+                            }
+                            SynchronizationExpired(_) => {
+                                continue 'synchronize;
+                            }
+                            other => bail!(other),
+                        }
                     }
                 }
             }
