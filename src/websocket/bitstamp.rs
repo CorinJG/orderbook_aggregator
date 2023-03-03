@@ -151,6 +151,6 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
                 }
             }
         }
-        return Err(Disconnect(EXCHANGE));
+        Err(Disconnect(EXCHANGE))
     }
 }
