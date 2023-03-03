@@ -4,4 +4,3 @@ depth: 10
 exchanges:
   - bitstamp
   - binance
-ws_buffer_time_ms: 4000

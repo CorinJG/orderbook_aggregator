@@ -15,12 +15,13 @@
 use std::pin::Pin;
 use std::time::Duration;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
+use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::timeout};
 use tungstenite::{error::Error, protocol::Message};
 
 use crate::{
@@ -29,14 +30,21 @@ use crate::{
         OrderbookSnapshot,
         OrderbookUpdateMessage::{self, *},
     },
+    utils::{Millis, Seconds},
 };
 
 use super::{
-    OrderbookWebsocketClient, WebsocketClientError::*, WebsocketConnectionResult, WsWriter,
+    OrderbookWebsocketClient,
+    WebsocketClientError::{self, *},
+    WebsocketConnectionResult, WsWriter,
 };
 
 const EXCHANGE: Exchange = Exchange::Binance;
 const WS_BASE_URL: &str = "wss://stream.binance.com:443/ws";
+// re-synchronize when this expires
+const SYNCHRONIZATION_TIMEOUT: Seconds = 600;
+// how long to buffer websocket messages before requesting an initial snapshot
+const WS_BUFFER_DURATION: Millis = 3_000;
 
 /// Type to deserialize the Binance rest orderbook snapshot into.
 #[derive(Debug, Deserialize)]
@@ -70,12 +78,18 @@ fn validate_ws_message(
     symbol: &String,
     expected_event: &'static str,
     expected_symbol: &String,
-) -> anyhow::Result<()> {
+) -> Result<(), WebsocketClientError> {
     if event != expected_event {
-        bail!(format!("unexpected event: {}", event));
+        return Err(InvariantViolation(
+            EXCHANGE,
+            format!("unexpected event: {}", event),
+        ));
     }
     if symbol != expected_symbol {
-        bail!(format!("unexpected symbol: {}", symbol))
+        return Err(InvariantViolation(
+            EXCHANGE,
+            format!("unexpected symbol: {}", symbol),
+        ));
     }
     Ok(())
 }
@@ -85,14 +99,12 @@ pub struct BinanceOrderbookWebsocketClient {
     symbol_lower: String,
     symbol_upper: String,
     downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
-    ws_buffer_time_ms: u64,
 }
 
 impl BinanceOrderbookWebsocketClient {
     pub fn new(
         currency_pair: CurrencyPair,
         downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
-        ws_buffer_time_ms: u64,
     ) -> Self {
         let symbol_lower = [currency_pair.base(), currency_pair.quote()].join("");
         let symbol_upper = [
@@ -104,48 +116,36 @@ impl BinanceOrderbookWebsocketClient {
             symbol_lower,
             symbol_upper,
             downstream_tx,
-            ws_buffer_time_ms,
         }
     }
-}
 
-#[async_trait]
-impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
-    type RawOrderbookSnapshot = RawOrderbookSnapshot;
-
-    async fn connect(&self) -> WebsocketConnectionResult {
-        let connect_addr = format!("{}/{}@depth@100ms", WS_BASE_URL, self.symbol_lower);
-        tokio_tungstenite::connect_async(connect_addr).await
-    }
-
-    async fn subscribe(&self, _: Pin<&mut WsWriter>) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn buffer_messages(&self) {
-        tokio::time::sleep(Duration::from_millis(self.ws_buffer_time_ms)).await;
-    }
-
-    async fn request_snapshot(&self) -> anyhow::Result<Option<RawOrderbookSnapshot>> {
-        Ok(Some(
-            reqwest::get(format!(
+    async fn get_rest_snapshot(&self) -> anyhow::Result<RawOrderbookSnapshot> {
+        Ok(Client::builder()
+            .timeout(Duration::from_millis(3_000))
+            .build()?
+            .get(format!(
                 "https://api.binance.com/api/v3/depth?symbol={}&limit=1000",
-                self.symbol_upper
+                self.symbol_upper,
             ))
+            .send()
             .await?
             .json()
-            .await?,
-        ))
+            .await?)
     }
 
-    async fn synchronize(
+    /// Process post-synchronization events, forwarding delta updates downstream.
+    /// Performs validation of event type and symbol as well as ensuring no gaps in update ids.
+    async fn _process_messages(
         &self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
-        initial_snapshot: Option<RawOrderbookSnapshot>,
-    ) -> anyhow::Result<()> {
-        // binance only calls synchronize once it has a snapshot
-        let initial_snapshot = initial_snapshot.unwrap();
-        while let Some(message) = read.next().await.transpose()? {
+    ) -> Result<(), WebsocketClientError> {
+        let mut prev_last_update_id = None;
+        while let Some(message) = read
+            .next()
+            .await
+            .transpose()
+            .context("tungstenite error during binance message processing")?
+        {
             if message.is_ping() || message.is_pong() {
                 continue;
             }
@@ -156,7 +156,71 @@ impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
                 last_update_id,
                 bids,
                 asks,
-            } = serde_json::from_slice(&message.into_data())?;
+            } = serde_json::from_slice(&message.into_data())
+                .context("serde_json error during binance ws message processing")?;
+            validate_ws_message(&event, &symbol, "depthUpdate", &self.symbol_upper)?;
+            if let Some(prev_last_id) = prev_last_update_id {
+                if first_update_id != prev_last_id + 1 {
+                    return Err(InvariantViolation(
+                        EXCHANGE,
+                        "missing event in sequence".into(),
+                    ));
+                }
+            }
+            prev_last_update_id = Some(last_update_id);
+            self.downstream_tx
+                .try_send(Delta {
+                    exchange: EXCHANGE,
+                    ask_updates: asks,
+                    bid_updates: bids,
+                })
+                .context("binance error sending downstream")?;
+        }
+        Err(Disconnect(EXCHANGE))
+    }
+}
+
+#[async_trait]
+impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
+    async fn connect(&self) -> WebsocketConnectionResult {
+        let connect_addr = format!("{}/{}@depth@100ms", WS_BASE_URL, self.symbol_lower);
+        tokio_tungstenite::connect_async(connect_addr).await
+    }
+
+    // no subscription necessary
+    async fn subscribe(&self, _: Pin<&mut WsWriter>) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn synchronize(
+        &self,
+        mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
+    ) -> Result<(), WebsocketClientError> {
+        // buffer messages
+        tokio::time::sleep(Duration::from_millis(WS_BUFFER_DURATION)).await;
+
+        // get an initial snapshot to synchronize the stream
+        let initial_snapshot = self.get_rest_snapshot().await?;
+
+        // attempt to synchronize - fail if no event immediately following the snapshot with no gaps
+        while let Some(message) = read
+            .next()
+            .await
+            .transpose()
+            .context("tungstenite error during binance synchronizaion")?
+        {
+            if message.is_ping() || message.is_pong() {
+                continue;
+            }
+            let WsMessage {
+                event,
+                symbol,
+                first_update_id,
+                last_update_id,
+                bids,
+                asks,
+            } = serde_json::from_slice(&message.into_data())
+                .context("serde_json error during binance synchronization")?;
             validate_ws_message(&event, &symbol, "depthUpdate", &self.symbol_upper)?;
             // discard events where last_update_id is older than snapshot update_id
             if last_update_id <= initial_snapshot.last_update_id {
@@ -164,7 +228,7 @@ impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
             }
             if first_update_id > initial_snapshot.last_update_id + 1 {
                 eprintln!("binance first event's update id > snapshot last update id + 1");
-                bail!(SynchronizationError(EXCHANGE));
+                return Err(Synchronization(EXCHANGE));
             }
             println!("binance ws client synchronized");
             // forward snapshot and first delta message downstream and return
@@ -186,43 +250,26 @@ impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
                 .context("binance error sending downstream")?;
             return Ok(());
         }
-        bail!(DisconnectError(EXCHANGE));
+        Err(Disconnect(EXCHANGE))
     }
 
-    /// Process post-synchronization events, forwarding delta updates downstream.
-    /// Performs validation of event type and symbol as well as ensuring no gaps in update ids.
+    /// Process websocket messages "ad infinitum", timing out with error when the synchronization period elapses.
     async fn process_messages(
         &self,
-        mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
-    ) -> anyhow::Result<()> {
-        let mut prev_last_update_id = None;
-        while let Some(message) = read.next().await.transpose()? {
-            if message.is_ping() || message.is_pong() {
-                continue;
-            }
-            let WsMessage {
-                event,
-                symbol,
-                first_update_id,
-                last_update_id,
-                bids,
-                asks,
-            } = serde_json::from_slice(&message.into_data())?;
-            validate_ws_message(&event, &symbol, "depthUpdate", &self.symbol_upper)?;
-            if let Some(prev_last_id) = prev_last_update_id {
-                if first_update_id != prev_last_id + 1 {
-                    bail!("missing event, gap in sequence");
-                }
-            }
-            prev_last_update_id = Some(last_update_id);
+        read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
+    ) -> Result<(), WebsocketClientError> {
+        if timeout(
+            Duration::from_secs(SYNCHRONIZATION_TIMEOUT),
+            self._process_messages(read),
+        )
+        .await
+        .is_err()
+        {
             self.downstream_tx
-                .try_send(Delta {
-                    exchange: EXCHANGE,
-                    ask_updates: asks,
-                    bid_updates: bids,
-                })
-                .context("binance error sending downstream")?;
+                .try_send(OrderbookUpdateMessage::Disconnect { exchange: EXCHANGE })
+                .context("binance error sending disconnect message")?;
+            return Err(SynchronizationExpired(EXCHANGE));
         }
-        bail!(DisconnectError(EXCHANGE));
+        Ok(())
     }
 }
