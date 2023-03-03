@@ -15,7 +15,7 @@
 use std::pin::Pin;
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
@@ -41,9 +41,9 @@ use super::{
 
 const EXCHANGE: Exchange = Exchange::Binance;
 const WS_BASE_URL: &str = "wss://stream.binance.com:443/ws";
-// re-synchronize when this expires
-const SYNCHRONIZATION_TIMEOUT: Seconds = 600;
-// how long to buffer websocket messages before requesting an initial snapshot
+// how often to re-sync a delta stream from a snapshot
+const SYNCHRONIZATION_PERIOD: Seconds = 600;
+// how long to buffer ws messages when syncing from a snapshot
 const WS_BUFFER_DURATION: Millis = 3_000;
 
 /// Type to deserialize the Binance rest orderbook snapshot into.
@@ -70,28 +70,6 @@ struct WsMessage {
     bids: Vec<(Decimal, Decimal)>,
     #[serde(rename = "a")]
     asks: Vec<(Decimal, Decimal)>,
-}
-
-/// Ensure the symbol and event fields are what we expect.
-fn validate_ws_message(
-    event: &String,
-    symbol: &String,
-    expected_event: &'static str,
-    expected_symbol: &String,
-) -> Result<(), WebsocketClientError> {
-    if event != expected_event {
-        return Err(InvariantViolation(
-            EXCHANGE,
-            format!("unexpected event: {}", event),
-        ));
-    }
-    if symbol != expected_symbol {
-        return Err(InvariantViolation(
-            EXCHANGE,
-            format!("unexpected symbol: {}", symbol),
-        ));
-    }
-    Ok(())
 }
 
 /// A type which connects to a websocket orderbook channel and sends update messages downstream.
@@ -158,7 +136,7 @@ impl BinanceOrderbookWebsocketClient {
                 asks,
             } = serde_json::from_slice(&message.into_data())
                 .context("serde_json error during binance ws message processing")?;
-            validate_ws_message(&event, &symbol, "depthUpdate", &self.symbol_upper)?;
+            self.validate_ws_message(event, symbol, "depthUpdate")?;
             if let Some(prev_last_id) = prev_last_update_id {
                 if first_update_id != prev_last_id + 1 {
                     return Err(InvariantViolation(
@@ -177,6 +155,28 @@ impl BinanceOrderbookWebsocketClient {
                 .context("binance error sending downstream")?;
         }
         Err(Disconnect(EXCHANGE))
+    }
+
+    /// Ensure the symbol and event fields are what we expect.
+    fn validate_ws_message(
+        &self,
+        event: String,
+        symbol: String,
+        expected_event: &'static str,
+    ) -> Result<(), WebsocketClientError> {
+        if event != expected_event {
+            return Err(InvariantViolation(
+                EXCHANGE,
+                format!("unexpected event: {}", event),
+            ));
+        }
+        if symbol != self.symbol_upper {
+            return Err(InvariantViolation(
+                EXCHANGE,
+                format!("unexpected symbol: {}", symbol),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -221,7 +221,7 @@ impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
                 asks,
             } = serde_json::from_slice(&message.into_data())
                 .context("serde_json error during binance synchronization")?;
-            validate_ws_message(&event, &symbol, "depthUpdate", &self.symbol_upper)?;
+            self.validate_ws_message(event, symbol, "depthUpdate")?;
             // discard events where last_update_id is older than snapshot update_id
             if last_update_id <= initial_snapshot.last_update_id {
                 continue;
@@ -258,18 +258,22 @@ impl OrderbookWebsocketClient for BinanceOrderbookWebsocketClient {
         &self,
         read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError> {
-        if timeout(
-            Duration::from_secs(SYNCHRONIZATION_TIMEOUT),
+        timeout(
+            Duration::from_secs(SYNCHRONIZATION_PERIOD),
             self._process_messages(read),
         )
         .await
-        .is_err()
-        {
-            self.downstream_tx
+        .map_err(|_| {
+            // timeout elapsed
+            if let Err(e) = self
+                .downstream_tx
                 .try_send(OrderbookUpdateMessage::Disconnect { exchange: EXCHANGE })
-                .context("binance error sending disconnect message")?;
-            return Err(SynchronizationExpired(EXCHANGE));
-        }
-        Ok(())
+            {
+                println!("binance error sending disconnect message");
+                Other(anyhow!(e))
+            } else {
+                SynchronizationExpired(EXCHANGE)
+            }
+        })?
     }
 }

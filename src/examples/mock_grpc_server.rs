@@ -19,13 +19,13 @@ async fn main() {
     let config = Config::default();
 
     // channel for Aggregator to forward updates to the gRPC server
-    let (tx, _) = tokio::sync::broadcast::channel::<Summary>(4);
+    let (agg_tx, agg_rx) = tokio::sync::watch::channel(None);
     // channel for websocket clients to send updates to the aggregator
     let (_, rx) = tokio::sync::mpsc::channel(8);
-    let grpc_aggregator_service = grpc_server::OrderbookAggregatorService::new(tx.clone());
+    let grpc_aggregator_service = grpc_server::OrderbookAggregatorService::new(agg_rx);
     tokio::spawn(grpc_server::run_grpc_server(
         grpc_aggregator_service,
         config.addr,
     ));
-    test_run_aggregator(Aggregator::new(config.depth, rx, tx)).await;
+    test_run_aggregator(Aggregator::new(config.depth, rx, agg_tx)).await;
 }

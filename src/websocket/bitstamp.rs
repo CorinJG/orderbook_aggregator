@@ -83,12 +83,12 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
             .await?)
     }
 
-    /// We use the order book stream here so no synchronization necessary
+    /// We use the order book stream here so no sync necessary
     async fn synchronize(
         &self,
         _read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError> {
-        return Ok(());
+        Ok(())
     }
 
     /// Process the websocket events, validating them and forwarding downstream.
