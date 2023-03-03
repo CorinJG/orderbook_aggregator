@@ -55,13 +55,6 @@ impl std::fmt::Debug for AggregatedOrderbook {
 }
 
 impl AggregatedOrderbook {
-    fn new() -> Self {
-        Self {
-            asks: BTreeMap::new(),
-            bids: BTreeMap::new(),
-        }
-    }
-
     /// Update from a snapshot, flushing old orders for this exchange first.
     fn update_from_snapshot(&mut self, exchange: Exchange, snapshot: OrderbookSnapshot) {
         self.flush_exchange_orders(exchange);
@@ -209,7 +202,7 @@ mod tests {
 
     #[test]
     fn aggregation() {
-        let mut a = AggregatedOrderbook::new();
+        let mut a = AggregatedOrderbook::default();
         a.asks.insert((dec!(11), Binance), dec!(2));
         a.asks.insert((dec!(12), Binance), dec!(2));
         a.asks.insert((dec!(13), Binance), dec!(2));
@@ -230,7 +223,7 @@ mod tests {
                 bids: vec![(dec!(3), dec!(1)), (dec!(2), dec!(1)), (dec!(1), dec!(1))],
             },
         );
-        let mut target = AggregatedOrderbook::new();
+        let mut target = AggregatedOrderbook::default();
         target.asks.insert((dec!(4), Binance), dec!(1));
         target.asks.insert((dec!(5), Binance), dec!(1));
         target.asks.insert((dec!(6), Binance), dec!(1));
@@ -272,7 +265,7 @@ mod tests {
                 (dec!(1), dec!(0)),
             ],
         );
-        let mut target = AggregatedOrderbook::new();
+        let mut target = AggregatedOrderbook::default();
         target.asks.insert((dec!(4), Binance), dec!(2));
         target.asks.insert((dec!(5), Binance), dec!(1));
         target.asks.insert((dec!(5.5), Binance), dec!(2));
