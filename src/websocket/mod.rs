@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use anyhow::bail;
 use async_trait::async_trait;
-use futures_util::{pin_mut, stream::SplitSink, Stream, StreamExt};
+use futures_util::{stream::SplitSink, Stream, StreamExt};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 use tokio::{net::TcpStream, time::timeout};
@@ -83,7 +83,7 @@ pub trait OrderbookWebsocketClient {
         loop {
             let (ws_stream, _response) = self.connect().await?;
             let (write, read) = ws_stream.split();
-            pin_mut!(write);
+            tokio::pin!(write);
 
             self.subscribe(write.as_mut()).await?;
             self.buffer_messages().await;

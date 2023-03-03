@@ -820,7 +820,6 @@ dependencies = [
  "serde_yaml",
  "thiserror",
  "tokio",
- "tokio-scoped",
  "tokio-stream",
  "tokio-tungstenite",
  "tonic",
@@ -1460,16 +1459,6 @@ checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
 dependencies = [
  "native-tls",
  "tokio",
-]
-
-[[package]]
-name = "tokio-scoped"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4beb8ba13bc53ac53ce1d52b42f02e5d8060f0f42138862869beb769722b256"
-dependencies = [
- "tokio",
- "tokio-stream",
 ]
 
 [[package]]

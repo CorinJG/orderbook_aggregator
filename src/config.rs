@@ -128,8 +128,8 @@ impl Config {
 /// Parse the config file and validate it.
 ///
 /// # Panics
-/// Will panic on invalid config, for example an unsupported exchange, invalid
-/// currency_pair formatting or currency_pair not supported by an exchange.
+/// Will panic on file not found or invalid config, for example an unsupported exchange
+/// or invalid currency_pair format.
 pub fn read_config() -> Config {
     let config_path = env!("CARGO_MANIFEST_DIR");
     let f = std::fs::File::open(format!("{config_path}/config.yml"))
