@@ -9,7 +9,7 @@ path = "src/bin/service.rs"
 
 [[example]]
 name = "mock_grpc_server"
-path = "src/examples/mock_grpc_server.rs"
+path = "examples/mock_grpc_server.rs"
 
 [dependencies]
 anyhow = "1.0.69"
