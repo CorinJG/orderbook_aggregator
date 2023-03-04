@@ -1,11 +1,25 @@
 //! Types and functions for parsing and validating configuration from a YAML file.
 
 use anyhow::bail;
+use once_cell::sync::Lazy;
+
 use regex::Regex;
 use serde::Deserialize;
 use std::net::SocketAddr;
 
 use crate::utils::deserialize_using_parse;
+
+/// Parse the config file and validate it.
+///
+/// # Panics
+/// Will panic on file not found or invalid config, for example an unsupported exchange
+/// or invalid currency_pair format.
+pub static CONFIG: Lazy<Config> = Lazy::new(|| {
+    let f = std::fs::File::open(format!("{}/config.yml", env!("CARGO_MANIFEST_DIR")))
+        .expect("failed to open config file");
+    let config: Config = serde_yaml::from_reader(f).expect("failed to parse config file");
+    config.validate().expect("invalid config")
+});
 
 /// The supported exchanges.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -112,7 +126,7 @@ impl Config {
     /// Validate the configuration.
     fn validate(self) -> anyhow::Result<Self> {
         if self.depth > 100 {
-            bail!("depth too large, some ws channels limit snapshots to 100")
+            bail!("depth too large, some APIs only support top 100 level snapshots")
         } else if self.depth < 1 {
             bail!("depth must be greater than 0")
         }
@@ -121,17 +135,4 @@ impl Config {
         }
         Ok(self)
     }
-}
-
-/// Parse the config file and validate it.
-///
-/// # Panics
-/// Will panic on file not found or invalid config, for example an unsupported exchange
-/// or invalid currency_pair format.
-pub fn read_config() -> Config {
-    let config_path = env!("CARGO_MANIFEST_DIR");
-    let f = std::fs::File::open(format!("{config_path}/config.yml"))
-        .expect("failed to open config file");
-    let config: Config = serde_yaml::from_reader(f).expect("failed to parse config file");
-    config.validate().expect("invalid config")
 }

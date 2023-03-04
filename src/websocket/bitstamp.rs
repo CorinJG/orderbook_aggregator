@@ -8,15 +8,16 @@ use std::pin::Pin;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::{SinkExt, Stream, StreamExt};
-use rust_decimal::Decimal;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tungstenite::{error::Error, protocol::Message};
 
 use crate::config::{CurrencyPair, Exchange};
-use crate::messages::OrderbookSnapshot;
-use crate::messages::OrderbookUpdateMessage::{self, *};
-use crate::utils::deserialize_using_parse;
+use crate::messages::{
+    OrderbookSnapshot,
+    OrderbookUpdateMessage::{self, *},
+};
+use crate::utils::{deserialize_using_parse, TruncatedOrders};
 
 use super::{
     OrderbookWebsocketClient,
@@ -36,13 +37,15 @@ struct WsMessage {
 }
 
 /// The inner data payload of a websocket message.
+/// Using the custom deserialize implementation for asks and bids only the first <depth> levels
+/// are deserialized, skipping the rest.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct WsMessageData {
     #[serde(deserialize_with = "deserialize_using_parse")]
     microtimestamp: u64,
-    bids: Vec<(Decimal, Decimal)>,
-    asks: Vec<(Decimal, Decimal)>,
+    bids: TruncatedOrders,
+    asks: TruncatedOrders,
 }
 
 /// Construct a websocket order book stream subscription message for the given symbol.
@@ -136,8 +139,8 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
                         .try_send(Snapshot {
                             exchange: EXCHANGE,
                             orderbook: OrderbookSnapshot {
-                                asks: data.asks,
-                                bids: data.bids,
+                                asks: data.asks.0,
+                                bids: data.bids.0,
                             },
                         })
                         .context("bitstamp error sending downstream")?;

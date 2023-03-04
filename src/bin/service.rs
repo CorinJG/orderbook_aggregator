@@ -3,7 +3,7 @@ use tokio::task::JoinHandle;
 
 use orderbook_aggregator::{
     aggregator::Aggregator,
-    config::{self, Exchange::*},
+    config::{Exchange::*, CONFIG},
     grpc_server,
     websocket::{self, OrderbookWebsocketClient},
 };
@@ -17,25 +17,23 @@ async fn run_ws_clients(mut ws_clients: FuturesUnordered<JoinHandle<anyhow::Resu
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let config = config::read_config();
-
     // channel for Aggregator to forward updates to the gRPC server
     let (grpc_tx, grpc_rx) = tokio::sync::watch::channel(None);
 
     // channel for websocket clients to send updates to the aggregator
     let (ws_client_tx, ws_client_rx) = tokio::sync::mpsc::channel(32);
 
-    let mut aggregator = Aggregator::new(config.depth, ws_client_rx, grpc_tx);
+    let mut aggregator = Aggregator::new(CONFIG.depth, ws_client_rx, grpc_tx);
 
     let grpc_server = grpc_server::OrderbookAggregatorService::new(grpc_rx);
 
     // use FuturesUnordered to run a number of websocket clients unknown until runtime
     let ws_clients = FuturesUnordered::new();
-    for exchange in config.exchanges {
+    for exchange in &CONFIG.exchanges {
         match exchange {
             Binance => {
                 let ws_client = websocket::binance::BinanceOrderbookWebsocketClient::new(
-                    config.currency_pair.clone(),
+                    CONFIG.currency_pair.clone(),
                     ws_client_tx.clone(),
                 );
                 ws_clients.push(tokio::spawn(
@@ -44,7 +42,7 @@ async fn main() {
             }
             Bitstamp => {
                 let ws_client = websocket::bitstamp::BitstampOrderbookWebsocketClient::new(
-                    config.currency_pair.clone(),
+                    CONFIG.currency_pair.clone(),
                     ws_client_tx.clone(),
                 );
                 ws_clients.push(tokio::spawn(
@@ -60,7 +58,7 @@ async fn main() {
         r = aggregator.run() => println!("{r:?}"),
         r = grpc_server::run_grpc_server(
             grpc_server,
-            config.addr,
+            CONFIG.addr,
         ) => println!("{r:?}"),
     }
 }

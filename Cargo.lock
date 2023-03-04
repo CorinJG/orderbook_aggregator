@@ -810,6 +810,7 @@ dependencies = [
  "async-trait",
  "futures",
  "futures-util",
+ "once_cell",
  "prost",
  "regex",
  "reqwest",
