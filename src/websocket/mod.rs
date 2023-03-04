@@ -1,29 +1,45 @@
-//! This module contains websocket client implementations to convert snapshots and/or deltas
-//! into an internal standard message protocol.
+//! This module contains the [WebsocketClient] trait and client implementations for various channels
+//! (delta / snapshot).
 //!
-//! Running clients forward [crate::messages::OrderbookUpdateMessage]s downstream using a channel provided.
+//! Some of the trait's methods are conceived with a delta client in mind, so they would be no-ops
+//! for a snapshot client.
 //!
-//! When available, client implementations should prefer to subscribe to an orderbook's
-//! diff/delta channel, forwarding deltas whenever updates are received. Otherwise
-//! if an exchange only supports a channel which sends the client orderbook snapshots at
-//! fixed intervals, downstream subscribers will receive latest snapshots at fixed
-//! intervals.
+//! ## Delta channels
+//! When feasible, client implementations may prefer a delta channel to a snapshot channel for
+//! order books to reduce network and processing load and ultimately latency.
+//!
+//! Note that when using a delta stream, synchronization may be necessary. This typically involves
+//! buffering messages for a short time and then requesting a snapshot (either on the websocket or
+//! rest). Then, conditional on having adequate delta messages buffered, an internal state for the
+//! order book can be initialized.
+//!
+//! Immediately following successful synchronization, the remaining messages in the buffer should
+//! be applied to the internal order book state. But it may be appropriate to delay sending the
+//! first update downstream for a brief time, as any message which wasn't processed immediately
+//! whilst awaiting the initial snapshot has become "stale".
 
 pub mod binance;
 pub mod bitstamp;
 
-use std::pin::Pin;
 use std::time::Duration;
+use std::{collections::BTreeMap, pin::Pin};
 
 use anyhow::bail;
 use async_trait::async_trait;
 use futures_util::{stream::SplitSink, Stream, StreamExt};
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tungstenite::{error::Error, http, protocol::Message};
 
-use crate::{config::Exchange, utils::Millis};
+use crate::messages::OrderbookSnapshot;
+use crate::{
+    config::Exchange,
+    messages::OrderbookUpdateMessage::{self, *},
+    utils::Millis,
+};
 
 // how long to wait before attempting reconnection
 const RECONNECT_DELAY: Millis = 1_000;
@@ -53,35 +69,29 @@ type WebsocketConnectionResult = Result<
 
 type WsWriter = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
-/// Trait for orderbook websocket clients.
+/// Trait for websocket clients. Agnostic to any downstream message forwarding.
 #[async_trait]
-pub trait OrderbookWebsocketClient {
+pub trait WebsocketClient {
     /// Connect to the websocket.
     async fn connect(&self) -> WebsocketConnectionResult;
 
-    /// Subscribe to websocket channel(s) by sending subscription messages (if any).
+    /// Subscribe to websocket channels by sending subscription messages (if any).
     async fn subscribe(&self, write: Pin<&mut WsWriter>) -> anyhow::Result<()>;
 
-    /// For websocket clients which must reconcile an initial snapshot with buffered websocket messages to
-    /// attach to a delta stream.
-    /// Any pertinent websocket events taken from the read buffer during synchronization should be processed
-    /// (e.g. sent downstream).
+    /// For clients which reconcile an initial snapshot with buffered messages to attach to a delta stream.
     async fn synchronize(
         &self,
         read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError>;
 
-    /// Long-running task to process all messages arriving on the websocket, including those buffered
-    /// before obtaining an initial snapshot to sychronize with.
+    /// Long-running task following any necessary synchronization to process all messages arriving on the websocket.
     async fn process_messages(
         &self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError>;
 
-    /// Manage the websocket connection. If the synchronization fails or the client becomes disconnected,
-    /// attempt reconnection after a short delay.
-    /// Periodically re-synchronize, depending on when the exchange client implementation chooses to return
-    /// processing messages early with SynchronizationExpired.
+    /// Manage the connection. Attempt reconnection after a short delay.
+    /// Periodic re-synchronize is available, if client returns process_messages with SynchronizationExpired.
     async fn manage_connection(&self) -> anyhow::Result<()> {
         'connect: loop {
             let (ws_stream, _response) = self.connect().await?;
@@ -104,7 +114,7 @@ pub trait OrderbookWebsocketClient {
                 }
 
                 match self.process_messages(read.as_mut()).await {
-                    Ok(_) => unreachable!("client process_messages should error on completion"),
+                    Ok(_) => unreachable!("process_messages should error on completion"),
                     Err(e) => {
                         eprintln!("{e}");
                         match e {
@@ -121,6 +131,65 @@ pub trait OrderbookWebsocketClient {
                     }
                 }
             }
+        }
+    }
+}
+
+/// A type for efficiently updating an order book using delta events.
+/// Maps price to quantity, maintaining price order.
+#[derive(Debug, Default)]
+struct BTreeBook {
+    asks: BTreeMap<Decimal, Decimal>,
+    bids: BTreeMap<Decimal, Decimal>,
+}
+
+impl BTreeBook {
+    pub(crate) fn apply_deltas(
+        &mut self,
+        asks: Vec<(Decimal, Decimal)>,
+        bids: Vec<(Decimal, Decimal)>,
+    ) {
+        for (p, q) in asks {
+            if q == dec!(0) {
+                self.asks.remove(&p);
+            } else {
+                self.asks.insert(p, q);
+            }
+        }
+        for (p, q) in bids {
+            if q == dec!(0) {
+                self.bids.remove(&p);
+            } else {
+                self.bids.insert(p, q);
+            }
+        }
+    }
+
+    /// Construct a [OrderbookUpdateMessage::DepthSnapshot] from the state.
+    pub(crate) fn to_depth_snapshot(
+        &self,
+        exchange: Exchange,
+        depth: usize,
+    ) -> OrderbookUpdateMessage {
+        DepthSnapshot {
+            exchange,
+            orderbook: OrderbookSnapshot {
+                // top asks in ascending order
+                asks: self
+                    .asks
+                    .iter()
+                    .take(depth)
+                    .map(|(p, q)| (*p, *q))
+                    .collect(),
+                // top bids in descending order
+                bids: self
+                    .bids
+                    .iter()
+                    .rev()
+                    .take(depth)
+                    .map(|(p, q)| (*p, *q))
+                    .collect(),
+            },
         }
     }
 }

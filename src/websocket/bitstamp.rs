@@ -1,7 +1,15 @@
-//! Types and [OrderbookWebsocketClient] trait implementation connecting to the Bitstamp websocket
-//! "order book" channel, which is simply a top 100 snapshot stream.
-//! I believe the "live full order book" channel has some issues and can't be relied upon to
-//! push all order book delta messages.
+//! [WebsocketClient] trait implementation connecting to the Bitstamp websocket "order book"
+//! channel, which is a top 100 snapshot stream.
+//!
+//! This implementation retains no order book state, simply deserializing events and sending
+//! (owned) data structures downstream without copying.
+//!
+//! For this particular client implementation, since we're not updating from deltas, we're
+//! only interested in the top-<depth> levels in the order book, so for efficiency snapshots'
+//! asks and bids fields are only deserialized to this depth and the remaining values are skipped.
+//!
+//! I have doubts whether the "live full order book" channel can be relied upon to push all
+//! events, although it further investigation is warranted.
 
 use std::pin::Pin;
 
@@ -20,7 +28,7 @@ use crate::messages::{
 use crate::utils::{deserialize_using_parse, TruncatedOrders};
 
 use super::{
-    OrderbookWebsocketClient,
+    WebsocketClient,
     WebsocketClientError::{self, *},
     WebsocketConnectionResult, WsWriter,
 };
@@ -28,7 +36,7 @@ use super::{
 const EXCHANGE: Exchange = Exchange::Bitstamp;
 const WS_BASE_URL: &str = "wss://ws.bitstamp.net";
 
-/// The format of an "order book" websocket message received by our client.
+/// Target deserialization type for an "order book" websocket message
 #[derive(Debug, Deserialize)]
 struct WsMessage {
     event: String,
@@ -36,9 +44,9 @@ struct WsMessage {
     data: WsMessageData,
 }
 
-/// The inner data payload of a websocket message.
+/// The 'data' field payload for a websocket message.
 /// Using the custom deserialize implementation for asks and bids only the first <depth> levels
-/// are deserialized, skipping the rest.
+/// are deserialized.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct WsMessageData {
@@ -55,6 +63,7 @@ fn construct_subscription_message(symbol: &str) -> String {
     format!("{front}{symbol}{back}")
 }
 
+/// The client forwards [OrderbookUpdateMessage]s downstream using the provided channel.
 pub struct BitstampOrderbookWebsocketClient {
     symbol: String,
     downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
@@ -73,7 +82,7 @@ impl BitstampOrderbookWebsocketClient {
 }
 
 #[async_trait]
-impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
+impl WebsocketClient for BitstampOrderbookWebsocketClient {
     async fn connect(&self) -> WebsocketConnectionResult {
         let connect_addr = WS_BASE_URL;
         tokio_tungstenite::connect_async(connect_addr).await
@@ -94,7 +103,7 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
         Ok(())
     }
 
-    /// Process the websocket events, validating them and forwarding downstream.
+    /// Process websocket messages, validating them and forwarding downstream.
     async fn process_messages(
         &self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
@@ -136,7 +145,7 @@ impl OrderbookWebsocketClient for BitstampOrderbookWebsocketClient {
                     }
                     prev_timestamp = Some(data.microtimestamp);
                     self.downstream_tx
-                        .try_send(Snapshot {
+                        .try_send(DepthSnapshot {
                             exchange: EXCHANGE,
                             orderbook: OrderbookSnapshot {
                                 asks: data.asks.0,

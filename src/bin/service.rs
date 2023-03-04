@@ -5,7 +5,7 @@ use orderbook_aggregator::{
     aggregator::Aggregator,
     config::{Exchange::*, CONFIG},
     grpc_server,
-    websocket::{self, OrderbookWebsocketClient},
+    websocket::{self, WebsocketClient},
 };
 
 /// Run all websocket clients until one returns / errors
@@ -33,6 +33,7 @@ async fn main() {
         match exchange {
             Binance => {
                 let ws_client = websocket::binance::BinanceOrderbookWebsocketClient::new(
+                    CONFIG.depth,
                     CONFIG.currency_pair.clone(),
                     ws_client_tx.clone(),
                 );

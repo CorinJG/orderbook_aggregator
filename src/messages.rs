@@ -4,28 +4,17 @@ use rust_decimal::Decimal;
 
 use crate::config::Exchange;
 
-/// Message type for publishing order book updates to downstream subscribers (one way only).
-/// Websocket clients which have access to a diff/delta stream send an initial Snapshot followed by subsequent
-/// Delta messages.
-/// Websocket clients which only have a periodic snapshot stream forward periodic Snapshot messages.
-/// (If an exchange has no websocket support, a client which makes periodic rest requests can use this protocol too.)
+/// Message type for publishing order book updates fromc lients to the aggregator.
 #[derive(Debug)]
 pub enum OrderbookUpdateMessage {
     // websocket client disconnected from ws channel
     Disconnect {
         exchange: Exchange,
     },
-    // the ws client's latest snapshot of the orderbook, also signals that the client is connected
-    Snapshot {
+    // the latest snapshot truncated to <depth> levels, also signals that the client is connected
+    DepthSnapshot {
         exchange: Exchange,
         orderbook: OrderbookSnapshot,
-    },
-
-    // a delta message contains a list of order book levels (price, quantity) with the new quantity
-    Delta {
-        exchange: Exchange,
-        ask_updates: Vec<(Decimal, Decimal)>,
-        bid_updates: Vec<(Decimal, Decimal)>,
     },
 }
 

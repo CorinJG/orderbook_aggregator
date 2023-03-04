@@ -2,21 +2,22 @@
 
 A gRPC server which connects to N exchange websockets for a configurable currency pair and streams an order book summary consisting of an aggregated top-*n* levels and the aggregated spread. 
 
-Where possible, diff/delta websocket channels are preferable to channels which push periodic full orderbook snapshots as it reduces network and processing loads, enabling downstream consumers to react quicker to market events. 
+## Features 
 
-However, some exchange websocket APIs have issues on certain channels making the Delta channel unfeasable.
+- Generic over symbol, number of exchanges and depth
+- Automatic reconnection (stale data dropped when a websocket client loses connection)
+- Truncated deserialization - only the first \<depth\> levels in the asks and bids fields in a snapshot payload are deserialized, skipping the remaining values
+- Delta clients "fast-forward" by updating local state without sending updates downstream for a short period immediately following synchronization, to avoid stale updates being forwarded 
+- `WebsocketClient` trait, facilitating new exchange implementation by extending a set of async methods.
+
+
+Where feasible, delta channels are preferable to periodic full orderbook snapshots as it reduces network and processing loads, enabling downstream consumers to react quicker to market events. 
 
 ## Design
 
 <kbd><img src="https://i.ibb.co/zSTg3fc/mermaid-diagram-2023-03-02-023950.png" alt="drawing" width="460" height="270"  style="border:1px solid black;"/></kbd>  &nbsp; 
 
-The aggregator, gRPC server and each websocket client are Tokio tasks, which communicate using Tokio channels. The message flow is one-directional.
-
-## Features 
-
-- Generic over symbol, number of exchanges aggregated over and the depth.
-- Automatic reconnection attempts (stale data dropped when a websocket client loses connection)
-- `OrderbookWebsocketClient` trait provided, facilitating rapid new exchange implementation by extending a minimal set of async fns.
+The components are Tokio tasks, which communicate using channels. The message flow is one-directional.
 
  ## Run
 
@@ -36,12 +37,14 @@ grpcurl -plaintext -import-path ./proto -proto orderbook.proto  '[::]:50051' ord
 Possible scopes for extension may include:
 - **truncate by volume**: as the top orders may be for insignificant quantities, truncating on cumulative order quantity may be another useful trader signal;
 - **performance**: 
-    - the `BTreeMap` used in the aggregator to maintain state of a combined orderbook uses the std lib defaults, but it's possible an alternative implementation could be optimal for our use case; 
-    - we deserialize websocket message price and quantity fields into `rust_decimal::Decimal`, to support precise floating point arithmetic. It may be worth profiling alternatives if performance is a primary consideration; 
-    - certain websocket event message validation could be omitted if trading in conditions of extreme sensitivity to latency - websocket events can be assumed to fail validation very rarely, so it may be a calculated risk in some contexts. In particular we can skip deserializing certain fields; 
-    - profiling of the number of threads in the runtime with different numbers of exchanges.
-- **security**: Upgrading gRPC to serve the stream over TLS would eliminate the risk of nefarious actors corrupting the datastream.  
+    - By far the most significant factor is network latency between client and exchange.
+    - How the aggregator stores its state is an area for exploration. A `BTreeMap` combinding all order books for all exchanges is efficient when clients are sending delta updates, but when a subset of clients are sending snapshots, regularly removing all levels from a particular exchange is slow. An alternative would be to keep separate `Vec`s for each exchange, and visit each of them when producing summaries.
+    - May be worth profiling alternatives to `rust_decimal::Decimal`
+    - Certain websocket event message validation could be omitted if trading in conditions of extreme sensitivity to latency - events fail validation very rarely, although with potentially serious consequences. It may be a calculated risk to skip deserializing certain message fields in some contexts.
+    - Profiling of the number of threads in the runtime with different numbers of exchanges.
+    - Mutexes not required if using a local task set on a single thread
+- **security**: Upgrading gRPC to TLS would eliminate the risk of nefarious actors corrupting the datastream.  
 - **logging and instrumentation**: if this were a real production service logging and instrumentation would be essential.
 
 ## Unimplemented
-- exchange symbol validation via restful endpoints, e.g. https://www.bitstamp.net/api/v2/trading-pairs-info/
+- exchange symbol validation via restful endpoints, e.g. https://www.bitstamp.net/api/v2/trading-pairs-info/. 
