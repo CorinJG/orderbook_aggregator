@@ -23,8 +23,8 @@ where
         .map_err(serde::de::Error::custom)
 }
 
-/// Target deserialization type for a single order in a list of asks or bids in a JSON snapshot
-/// having custom Visitor which skips asks/bids after first <depth>.
+/// Target deserialization type for a list of asks or bids in a JSON snapshot which skips 
+/// orders after first <depth>.
 #[derive(Debug, Default)]
 pub struct TruncatedOrders(pub Vec<(Decimal, Decimal)>);
 
@@ -34,9 +34,9 @@ impl<'de> de::Deserialize<'de> for TruncatedOrders {
     where
         D: Deserializer<'de>,
     {
-        struct MyTupleVisitor;
+        struct MyVisitor;
 
-        impl<'de> Visitor<'de> for MyTupleVisitor {
+        impl<'de> Visitor<'de> for MyVisitor {
             type Value = TruncatedOrders;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -63,6 +63,6 @@ impl<'de> de::Deserialize<'de> for TruncatedOrders {
             }
         }
 
-        deserializer.deserialize_seq(MyTupleVisitor)
+        deserializer.deserialize_seq(MyVisitor)
     }
 }
