@@ -21,8 +21,7 @@
 pub mod binance;
 pub mod bitstamp;
 
-use std::time::Duration;
-use std::{collections::BTreeMap, pin::Pin};
+use std::{collections::BTreeMap, pin::Pin, time::Duration};
 
 use anyhow::bail;
 use async_trait::async_trait;
@@ -34,10 +33,12 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tungstenite::{error::Error, http, protocol::Message};
 
-use crate::messages::OrderbookSnapshot;
 use crate::{
     config::Exchange,
-    messages::OrderbookUpdateMessage::{self, *},
+    messages::{
+        OrderbookSnapshot,
+        OrderbookUpdateMessage::{self, *},
+    },
     utils::Millis,
 };
 
@@ -104,10 +105,14 @@ pub trait WebsocketClient {
                 if let Err(e) = self.synchronize(read.as_mut()).await {
                     eprintln!("{e}");
                     match e {
-                        Disconnect(exchange) | Synchronization(exchange) => {
+                        Disconnect(exchange) => {
                             tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY)).await;
                             println!("{exchange:?} attempting reconnection");
                             continue 'connect;
+                        }
+                        Synchronization(exchange) => {
+                            println!("{exchange:?} attempting synchronization");
+                            continue 'synchronize;
                         }
                         other => bail!(other),
                     }
