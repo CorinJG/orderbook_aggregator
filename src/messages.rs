@@ -4,7 +4,7 @@ use rust_decimal::Decimal;
 
 use crate::config::Exchange;
 
-/// Message type for publishing order book updates fromc lients to the aggregator.
+/// Message type for publishing order book updates from clients to the aggregator.
 #[derive(Debug)]
 pub enum OrderbookUpdateMessage {
     // websocket client disconnected from ws channel

@@ -43,7 +43,6 @@ Possible scopes for extension may include:
     - Certain websocket event message validation could be omitted if trading in conditions of extreme sensitivity to latency - events fail validation very rarely, although with potentially serious consequences. It may be a calculated risk to skip deserializing certain message fields in some contexts.
     - Profiling of the number of threads in the runtime with different numbers of exchanges.
     - Mutexes not required if using a local task set on a single thread
-- **security**: Upgrading gRPC to TLS would eliminate the risk of nefarious actors corrupting the datastream.  
 - **logging and instrumentation**: if this were a real production service logging and instrumentation would be essential.
 
 ## Unimplemented

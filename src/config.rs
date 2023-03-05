@@ -2,14 +2,13 @@
 
 use anyhow::bail;
 use once_cell::sync::Lazy;
-
 use regex::Regex;
 use serde::Deserialize;
 use std::net::SocketAddr;
 
 use crate::utils::deserialize_using_parse;
 
-/// Parse the config file and validate it.
+/// Parse and validate the config file.
 ///
 /// # Panics
 /// Will panic on file not found or invalid config, for example an unsupported exchange
