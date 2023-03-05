@@ -20,12 +20,11 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tungstenite::{error::Error, protocol::Message};
 
-use crate::config::{CurrencyPair, Exchange};
-use crate::messages::{
-    OrderbookSnapshot,
-    OrderbookUpdateMessage::{self, *},
+use crate::{
+    config::{CurrencyPair, Exchange},
+    messages::{OrderbookSnapshot, OrderbookUpdateMessage::{self, *}},
+    utils::{deserialize_using_parse, TruncatedOrders},
 };
-use crate::utils::{deserialize_using_parse, TruncatedOrders};
 
 use super::{
     WebsocketClient,
