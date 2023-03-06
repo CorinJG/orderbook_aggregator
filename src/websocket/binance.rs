@@ -38,13 +38,6 @@ use super::{
 };
 
 const EXCHANGE: Exchange = Exchange::Binance;
-const WS_BASE_URL: &str = "wss://stream.binance.com:443/ws";
-// how often to re-sync a delta stream from a snapshot
-const SYNCHRONIZATION_PERIOD: Seconds = 600;
-// brief period of applying updates to internal state without forwarding downstream following sync
-const FAST_FORWARD_TIME: Millis = 500;
-// how long to buffer ws messages when syncing from a snapshot
-const WS_BUFFER_DURATION: Millis = 3_000;
 
 /// Type to deserialize the Binance rest orderbook snapshot into.
 #[derive(Debug, Deserialize)]
@@ -211,6 +204,7 @@ impl BinanceOrderbookWebsocketClient {
 #[async_trait]
 impl WebsocketClient for BinanceOrderbookWebsocketClient {
     async fn connect(&self) -> WebsocketConnectionResult {
+        const WS_BASE_URL: &str = "wss://stream.binance.com:443/ws";
         let connect_addr = format!("{}/{}@depth@100ms", WS_BASE_URL, self.symbol_lower);
         tokio_tungstenite::connect_async(connect_addr).await
     }
@@ -224,7 +218,8 @@ impl WebsocketClient for BinanceOrderbookWebsocketClient {
         &self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError> {
-        // buffer messages
+        // buffer messages before requesting snapshot
+        const WS_BUFFER_DURATION: Millis = 3_000;
         tokio::time::sleep(Duration::from_millis(WS_BUFFER_DURATION)).await;
 
         // get an initial snapshot to sync the stream
@@ -277,7 +272,9 @@ impl WebsocketClient for BinanceOrderbookWebsocketClient {
                 })?;
             return Err(Disconnect(EXCHANGE));
         }
-        // now "fast-forward", applying deltas for remaining messages in the buffer *without sending updates downstream*
+        // brief period of applying updates to internal state without forwarding downstream following sync
+        // the intention is that the websocket buffer is drained fully in this time
+        const FAST_FORWARD_TIME: Millis = 500;
         match timeout(
             Duration::from_millis(FAST_FORWARD_TIME),
             self._process_messages(read, false),
@@ -296,11 +293,13 @@ impl WebsocketClient for BinanceOrderbookWebsocketClient {
         }
     }
 
-    /// Process websocket messages "ad infinitum", timing out with error when the synchronization period elapses.
+    /// Process websocket messages "ad infinitum", returning Err(SynchronizationExpired) when the
+    /// synchronization period elapses.
     async fn process_messages(
         &self,
         read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError> {
+        const SYNCHRONIZATION_PERIOD: Seconds = 600;
         timeout(
             Duration::from_secs(SYNCHRONIZATION_PERIOD),
             self._process_messages(read, true),
@@ -308,14 +307,15 @@ impl WebsocketClient for BinanceOrderbookWebsocketClient {
         .await
         .map_err(|_| {
             // timeout elapsed
-            if let Err(e) = self
+            match self
                 .downstream_tx
                 .try_send(OrderbookUpdateMessage::Disconnect { exchange: EXCHANGE })
             {
-                println!("binance error sending disconnect message");
-                Other(anyhow!(e))
-            } else {
-                SynchronizationExpired(EXCHANGE)
+                Ok(_) => SynchronizationExpired(EXCHANGE),
+                Err(e) => {
+                    println!("binance error sending disconnect message");
+                    Other(anyhow!(e))
+                }
             }
         })?
     }

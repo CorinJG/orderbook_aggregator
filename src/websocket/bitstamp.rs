@@ -22,7 +22,10 @@ use tungstenite::{error::Error, protocol::Message};
 
 use crate::{
     config::{CurrencyPair, Exchange},
-    messages::{OrderbookSnapshot, OrderbookUpdateMessage::{self, *}},
+    messages::{
+        OrderbookSnapshot,
+        OrderbookUpdateMessage::{self, *},
+    },
     utils::{deserialize_using_parse, TruncatedOrders},
 };
 
@@ -33,7 +36,6 @@ use super::{
 };
 
 const EXCHANGE: Exchange = Exchange::Bitstamp;
-const WS_BASE_URL: &str = "wss://ws.bitstamp.net";
 
 /// Target deserialization type for an "order book" websocket message
 #[derive(Debug, Deserialize)]
@@ -83,6 +85,7 @@ impl BitstampOrderbookWebsocketClient {
 #[async_trait]
 impl WebsocketClient for BitstampOrderbookWebsocketClient {
     async fn connect(&self) -> WebsocketConnectionResult {
+        const WS_BASE_URL: &str = "wss://ws.bitstamp.net";
         let connect_addr = WS_BASE_URL;
         tokio_tungstenite::connect_async(connect_addr).await
     }

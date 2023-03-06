@@ -42,9 +42,6 @@ use crate::{
     utils::Millis,
 };
 
-// how long to wait before attempting reconnection
-const RECONNECT_DELAY: Millis = 1_000;
-
 #[derive(Debug, Error)]
 pub enum WebsocketClientError {
     #[error("{0:?} websocket client disconnected unexpectedly")]
@@ -94,6 +91,7 @@ pub trait WebsocketClient {
     /// Manage the connection. Attempt reconnection after a short delay.
     /// Periodic re-synchronize is available, if client returns process_messages with SynchronizationExpired.
     async fn manage_connection(&self) -> anyhow::Result<()> {
+        const RECONNECT_DELAY: Millis = 1_000;
         'connect: loop {
             let (ws_stream, _response) = self.connect().await?;
             let (write, read) = ws_stream.split();
