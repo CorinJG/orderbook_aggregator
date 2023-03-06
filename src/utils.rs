@@ -47,7 +47,7 @@ impl<'de> de::Deserialize<'de> for TruncatedOrders {
             where
                 V: SeqAccess<'de>,
             {
-                let mut inner = Vec::new();
+                let mut inner = Vec::with_capacity(CONFIG.depth);
                 for i in 0..CONFIG.depth {
                     inner.push(
                         seq.next_element()?
