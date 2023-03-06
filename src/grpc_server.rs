@@ -1,6 +1,9 @@
 use std::net::SocketAddr;
 
-use tokio::sync::{mpsc::{self, error::TrySendError}, watch};
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    watch,
+};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Request, Response, Status};
 

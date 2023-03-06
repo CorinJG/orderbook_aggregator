@@ -23,7 +23,7 @@ where
         .map_err(serde::de::Error::custom)
 }
 
-/// Target deserialization type for a list of asks or bids in a JSON snapshot which skips 
+/// Target deserialization type for a list of asks or bids in a JSON snapshot which skips
 /// orders after first <depth>.
 #[derive(Debug, Default)]
 pub struct TruncatedOrders(pub Vec<(Decimal, Decimal)>);
