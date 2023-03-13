@@ -1,5 +1,4 @@
 use futures::{stream::FuturesUnordered, StreamExt};
-use tokio::task::JoinHandle;
 
 use orderbook_aggregator::{
     aggregator::Aggregator,
@@ -7,13 +6,6 @@ use orderbook_aggregator::{
     grpc_server,
     websocket::{self, WebsocketClient},
 };
-
-/// Run all websocket clients until one returns / errors
-async fn run_ws_clients(mut ws_clients: FuturesUnordered<JoinHandle<anyhow::Result<()>>>) {
-    if let Some(r) = ws_clients.next().await {
-        println!("{r:?}");
-    }
-}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -28,7 +20,7 @@ async fn main() {
     let grpc_server = grpc_server::OrderbookAggregatorService::new(grpc_rx);
 
     // use FuturesUnordered to run a number of websocket clients unknown until runtime
-    let ws_clients = FuturesUnordered::new();
+    let mut ws_clients = FuturesUnordered::new();
     for exchange in &CONFIG.exchanges {
         match exchange {
             Binance => {
@@ -55,7 +47,7 @@ async fn main() {
 
     // terminate when any task finishes/errors
     tokio::select! {
-        _ = run_ws_clients(ws_clients) => (),
+        Some(r) = ws_clients.next() => println!("{r:?}"),
         r = aggregator.run() => println!("{r:?}"),
         r = grpc_server::run_grpc_server(
             grpc_server,
