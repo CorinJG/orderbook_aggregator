@@ -99,7 +99,7 @@ impl WebsocketClient for BitstampOrderbookWebsocketClient {
 
     /// We use the order book stream here so no sync necessary
     async fn synchronize(
-        &self,
+        &mut self,
         _read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError> {
         Ok(())
@@ -107,7 +107,7 @@ impl WebsocketClient for BitstampOrderbookWebsocketClient {
 
     /// Process websocket messages, validating them and forwarding downstream.
     async fn process_messages(
-        &self,
+        &mut self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError> {
         println!("bitstamp ws client connected");

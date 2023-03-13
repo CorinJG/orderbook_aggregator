@@ -21,6 +21,7 @@
 pub mod binance;
 pub mod bitstamp;
 
+use std::sync::Arc;
 use std::{collections::BTreeMap, pin::Pin, time::Duration};
 
 use anyhow::bail;
@@ -78,19 +79,19 @@ pub trait WebsocketClient {
 
     /// For clients which reconcile an initial snapshot with buffered messages to attach to a delta stream.
     async fn synchronize(
-        &self,
+        &mut self,
         read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError>;
 
     /// Long-running task following any necessary synchronization to process all messages arriving on the websocket.
     async fn process_messages(
-        &self,
+        &mut self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError>;
 
     /// Manage the connection. Attempt reconnection after a short delay.
     /// Periodic re-synchronize is available, if client returns process_messages with SynchronizationExpired.
-    async fn manage_connection(&self) -> anyhow::Result<()> {
+    async fn manage_connection(mut self: Arc<Self>) -> anyhow::Result<()> {
         const RECONNECT_DELAY: Millis = 1_000;
         'connect: loop {
             let (ws_stream, _response) = self.connect().await?;
@@ -100,7 +101,11 @@ pub trait WebsocketClient {
             self.subscribe(write.as_mut()).await?;
 
             'synchronize: loop {
-                if let Err(e) = self.synchronize(read.as_mut()).await {
+                if let Err(e) = Arc::get_mut(&mut self)
+                    .unwrap()
+                    .synchronize(read.as_mut())
+                    .await
+                {
                     eprintln!("{e}");
                     match e {
                         Disconnect(exchange) => {
@@ -116,7 +121,11 @@ pub trait WebsocketClient {
                     }
                 }
 
-                match self.process_messages(read.as_mut()).await {
+                match Arc::get_mut(&mut self)
+                    .unwrap()
+                    .process_messages(read.as_mut())
+                    .await
+                {
                     Ok(_) => unreachable!("process_messages should error on completion"),
                     Err(e) => {
                         eprintln!("{e}");

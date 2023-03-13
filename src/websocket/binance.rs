@@ -12,7 +12,6 @@
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
@@ -81,7 +80,7 @@ pub struct BinanceOrderbookWebsocketClient {
     symbol_lower: String,
     symbol_upper: String,
     downstream_tx: mpsc::Sender<OrderbookUpdateMessage>,
-    orderbook: Mutex<BTreeBook>,
+    orderbook: BTreeBook,
 }
 
 impl BinanceOrderbookWebsocketClient {
@@ -101,7 +100,7 @@ impl BinanceOrderbookWebsocketClient {
             symbol_lower,
             symbol_upper,
             downstream_tx,
-            orderbook: Mutex::new(BTreeBook::default()),
+            orderbook: BTreeBook::default(),
         }
     }
 
@@ -122,7 +121,7 @@ impl BinanceOrderbookWebsocketClient {
     /// Process events post-synchronization, sending latest (truncated) snapshots downstream on change.
     /// Performs validation of event type and symbol as well as ensuring no gaps in update ids.
     async fn _process_messages(
-        &self,
+        &mut self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
         // flag for forwarding updates
         forward: bool,
@@ -156,15 +155,10 @@ impl BinanceOrderbookWebsocketClient {
                 }
             }
             prev_last_update_id = Some(last_update_id);
-            self.orderbook.lock().unwrap().apply_deltas(asks, bids);
+            self.orderbook.apply_deltas(asks, bids);
             if forward {
                 self.downstream_tx
-                    .try_send(
-                        self.orderbook
-                            .lock()
-                            .unwrap()
-                            .to_depth_snapshot(EXCHANGE, self.depth),
-                    )
+                    .try_send(self.orderbook.to_depth_snapshot(EXCHANGE, self.depth))
                     .context("binance error sending downstream")?;
             }
         }
@@ -215,7 +209,7 @@ impl WebsocketClient for BinanceOrderbookWebsocketClient {
     }
 
     async fn synchronize(
-        &self,
+        &mut self,
         mut read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError> {
         // buffer messages before requesting snapshot
@@ -257,9 +251,9 @@ impl WebsocketClient for BinanceOrderbookWebsocketClient {
             println!("binance client synchronized");
             if !synchronized {
                 synchronized = true;
-                *self.orderbook.lock().unwrap() = BTreeBook::from(initial_snapshot);
+                self.orderbook = BTreeBook::from(initial_snapshot);
             }
-            self.orderbook.lock().unwrap().apply_deltas(asks, bids);
+            self.orderbook.apply_deltas(asks, bids);
             break;
         }
         if !synchronized {
@@ -296,7 +290,7 @@ impl WebsocketClient for BinanceOrderbookWebsocketClient {
     /// Process websocket messages "ad infinitum", returning Err(SynchronizationExpired) when the
     /// synchronization period elapses.
     async fn process_messages(
-        &self,
+        &mut self,
         read: Pin<&mut (impl Stream<Item = Result<Message, Error>> + Send)>,
     ) -> Result<(), WebsocketClientError> {
         const SYNCHRONIZATION_PERIOD: Seconds = 600;

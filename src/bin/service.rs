@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures::{stream::FuturesUnordered, StreamExt};
 
 use orderbook_aggregator::{
@@ -24,20 +26,21 @@ async fn main() {
     for exchange in &CONFIG.exchanges {
         match exchange {
             Binance => {
-                let ws_client = websocket::binance::BinanceOrderbookWebsocketClient::new(
+                let ws_client = Arc::new(websocket::binance::BinanceOrderbookWebsocketClient::new(
                     CONFIG.depth,
                     CONFIG.currency_pair.clone(),
                     ws_client_tx.clone(),
-                );
+                ));
                 ws_clients.push(tokio::spawn(
                     async move { ws_client.manage_connection().await },
                 ));
             }
             Bitstamp => {
-                let ws_client = websocket::bitstamp::BitstampOrderbookWebsocketClient::new(
-                    CONFIG.currency_pair.clone(),
-                    ws_client_tx.clone(),
-                );
+                let ws_client =
+                    Arc::new(websocket::bitstamp::BitstampOrderbookWebsocketClient::new(
+                        CONFIG.currency_pair.clone(),
+                        ws_client_tx.clone(),
+                    ));
                 ws_clients.push(tokio::spawn(
                     async move { ws_client.manage_connection().await },
                 ));
